@@ -1,4 +1,4 @@
-# Quark Audio Player v1.1
+# Quark Audio Player v0.2
 
 A PyQt6 audio player with real-time visualisations, equalizer, and full playlist management.
 
