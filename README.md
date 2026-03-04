@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # Quark Audio Player v0.2
+=======
+# Quark Audio Player v0.3
+>>>>>>> 79b06736174fbeae93a644d21fb0652cf91b3d9b
 
 A PyQt6 audio player with real-time visualisations, equalizer, and full playlist management.
 
@@ -6,7 +10,7 @@ A PyQt6 audio player with real-time visualisations, equalizer, and full playlist
 
 - 6 visualisation modes: Spectrum, Spectrogram, Oscilloscope, Lissajous, Spectral Flux, VU Meter
 - 10-band equalizer with presets
-- Playlist with O(1) duplicate detection, search, undo-delete, drag & drop
+- Playlist with duplicate detection, search, undo-delete, drag & drop
 - Album art and metadata display
 - Configurable colours, font, FPS, shortcuts
 - File browser with natural sort and context menu
