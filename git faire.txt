@@ -1,0 +1,7 @@
+git init
+git remote add origin https://github.com/tetraquark-su3/quark-audio-player
+git pull origin main
+git add .
+git commit -m "v4.0 UI improvement, gapless music"
+git branch -m main
+git push --set-upstream origin main --force
