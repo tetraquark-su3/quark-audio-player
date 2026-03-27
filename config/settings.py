@@ -39,6 +39,7 @@ DEFAULT_CONFIG: dict = {
     "spectrogram_resolution": 15,  # frames per bin (15 @ 30fps = 0.5s)
     "font_family":      "Cantarell",
     "font_size":        13,
+    "icon_style":       "neon",   # "neon" | "duotone" | "bold"
     "shortcuts": {
         "play_pause": "Space",
         "next":       "Right",

@@ -55,6 +55,11 @@ class SpectrumWidget(QWidget):
         self._primary = primary
         self._accent  = accent
 
+    def reset(self) -> None:
+        """Clear all bars and repaint a blank widget."""
+        self._smoothed = []
+        self.update()
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.update()
@@ -138,6 +143,12 @@ class SpectrogramWidget(QWidget):
             self._columns.pop(0)
         self.update()
 
+    def reset(self) -> None:
+        """Clear all columns and repaint a blank widget."""
+        self._columns.clear()
+        self._frame_acc.clear()
+        self.update()
+
     def showEvent(self, event) -> None:
             super().showEvent(event)
             self._columns.clear()
@@ -208,6 +219,11 @@ class OscilloscopeWidget(QWidget):
     def set_colors(self, primary: str, _accent: str) -> None:
         self._primary = primary
 
+    def reset(self) -> None:
+        """Clear waveform and repaint a blank widget."""
+        self._smoothed = []
+        self.update()
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.update()
@@ -251,6 +267,12 @@ class LissajousWidget(QWidget):
     def set_colors(self, primary: str, accent: str) -> None:
         self._primary = primary
         self._accent  = accent
+
+    def reset(self) -> None:
+        """Clear figure and repaint a blank widget."""
+        self._left  = []
+        self._right = []
+        self.update()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -321,6 +343,12 @@ class SpectralFluxWidget(QWidget):
     def set_colors(self, primary: str, accent: str) -> None:
         self._primary = primary
         self._accent  = accent
+
+    def reset(self) -> None:
+        """Clear history and repaint a blank widget."""
+        self._history.clear()
+        self._prev = None
+        self.update()
 
     def showEvent(self, event) -> None:
         """Clear stale history on tab switch — missing data would be misleading."""
@@ -413,6 +441,16 @@ class VUMeterWidget(QWidget):
     def set_colors(self, primary: str, accent: str) -> None:
         self._primary = primary
         self._accent  = accent
+
+    def reset(self) -> None:
+        """Reset all levels to zero and repaint."""
+        self._left   = 0.0
+        self._right  = 0.0
+        self._peak_l = 0.0
+        self._peak_r = 0.0
+        self._hold_l = 0
+        self._hold_r = 0
+        self.update()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

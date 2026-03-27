@@ -14,19 +14,28 @@ class ShortcutField(QLineEdit):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setPlaceholderText("Click then press shortcut…")
-        self.setStyleSheet("""
-            QLineEdit {
+        self._focus_color = "#e94560"  # default, overridden by set_focus_color()
+        self._apply_style()
+
+    def set_focus_color(self, color: str) -> None:
+        """Update the focus border color to match the current theme."""
+        self._focus_color = color
+        self._apply_style()
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(f"""
+            QLineEdit {{
                 border: 2px solid #444466;
                 border-radius: 4px;
                 padding: 2px 6px;
                 background: #1a1a2e;
                 color: #e0e0f0;
-            }
-            QLineEdit:focus {
-                border: 2px solid #e94560;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {self._focus_color};
                 background: #2a1a3e;
                 color: #ffffff;
-            }
+            }}
         """)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:

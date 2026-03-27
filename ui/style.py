@@ -12,15 +12,29 @@ def build_stylesheet(config: dict) -> str:
     cf  = config["background_color"]   # base background
     cs  = config["selection_color"]    # selection highlight
 
-    # Surface hierarchy — very subtle steps from the base
-    s1  = derive_color(cf,  8)   # cards / panels — barely lifted
-    s2  = derive_color(cf, 16)   # hover states
-    s3  = derive_color(cf, 28)   # active / pressed
+    # Detect background luminance to pick appropriate text colors
+    bg_hex = cf.lstrip("#")
+    r_bg = int(bg_hex[0:2], 16)
+    g_bg = int(bg_hex[2:4], 16)
+    b_bg = int(bg_hex[4:6], 16)
+    luminance = 0.299 * r_bg + 0.587 * g_bg + 0.114 * b_bg
+    dark_bg = luminance < 128
 
-    # Text hierarchy
-    t1  = "#f0f0f8"   # primary text   — bright
-    t2  = "#9098b0"   # secondary text — muted
-    t3  = "#50586a"   # tertiary text  — very muted (labels, hints)
+    # Surface hierarchy — lift on dark bg, darken on light bg
+    _step = 1 if dark_bg else -1
+    s1  = derive_color(cf,  8 * _step)   # cards / panels
+    s2  = derive_color(cf, 16 * _step)   # hover states
+    s3  = derive_color(cf, 28 * _step)   # active / pressed
+
+    # Text hierarchy — inverted relative to background luminance
+    if dark_bg:
+        t1 = "#f0f0f8"   # primary   — bright
+        t2 = "#9098b0"   # secondary — muted
+        t3 = "#50586a"   # tertiary  — very muted
+    else:
+        t1 = "#0a0a14"   # primary   — near black
+        t2 = "#3a3a52"   # secondary — dark grey
+        t3 = "#7070a0"   # tertiary  — medium grey
 
     ff       = config.get("font_family", "Cantarell")
     ft       = config.get("font_size",   13)
@@ -431,5 +445,10 @@ def build_stylesheet(config: dict) -> str:
             border-radius: 5px;
             padding: 4px 8px;
             font-size: 11px;
+        }}
+
+        /* ── Splitter handles — painted by _StyledSplitterHandle ── */
+        QSplitter::handle {{
+            background-color: transparent;
         }}
     """
