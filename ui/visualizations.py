@@ -366,7 +366,6 @@ class SpectralFluxWidget(QWidget):
         if w == 0:
             return
         h_use = h - 16
-        painter.fillRect(0, 0, w, h, QColor("#1a1a2e"))
         cp = QColor(self._primary)
         ca = QColor(self._accent)
         col_w = w / self._max_points
