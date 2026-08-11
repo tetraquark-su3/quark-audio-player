@@ -864,15 +864,10 @@ class MainWindow(QMainWindow):
         item = self._playlist.item_by_path(path)
         if item is None:
             return  # track was removed from the playlist in the meantime
-        new_row = self._playlist.indexOfTopLevelItem(item)
 
         # Cancel any pending end-of-playlist grace timer — a new track just
         # arrived so we must not freeze/reset the visualisations.
         self._timer_end_grace.stop()
-
-        rows = getattr(self, "_media_list_rows", [])
-        if new_row not in rows:
-            self._media_list_rows = rows + [new_row]
 
         if self._player.is_playing():
             self._timer_progress.start()
@@ -1146,10 +1141,6 @@ class MainWindow(QMainWindow):
         with self._media_list_lock:
             self._media_list = ml
             self._list_player.set_media_list(ml)
-
-        # Store the row mapping so _on_vlc_next_item can find which
-        # playlist row VLC just moved to.
-        self._media_list_rows = rows
 
     def _update_ui_for_track(self, path: str) -> None:
         """Update info labels, album art, status bar and detail pane."""
