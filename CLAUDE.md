@@ -28,9 +28,6 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   compensate VLC's reported decoder position with `audio_get_delay()` so
   visuals match what's actually audible) — **dead code**, no callers found
   anywhere in the project; see Dead code below.
-- `audio/gapless.py` — `GaplessEngine` (sounddevice PCM streaming). **Currently
-  dead code**: not imported or instantiated anywhere outside this file.
-  Confirm intent (wire it up, or drop it) before changing it.
 - `ui/main_window.py` — `MainWindow`, ~1500 lines. Wires VLC (`MediaPlayer` +
   `MediaListPlayer`) to the playlist, visualisations, file browser, settings,
   EQ, and shortcuts. One large class doing both UI construction and playback
@@ -40,8 +37,6 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
 ## Dead code (confirmed via audit, 2026-08-11)
-- `audio/gapless.py` — entire file (`GaplessEngine`), zero references outside
-  itself.
 - `audio/engine.py::compute_sync_pos()` — zero callers anywhere in the
   project, despite a detailed docstring describing VLC audio-delay
   compensation for visualisation sync. Confirm whether this should actually

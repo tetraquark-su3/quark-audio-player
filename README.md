@@ -33,8 +33,7 @@ quark_audio_player/
 │   └── settings.py      # Defaults, load/save config, is_audio, derive_color
 │
 ├── audio/
-│   ├── engine.py        # Metadata, album art, FFT helpers, SampleLoader
-│   └── gapless.py       # GaplessEngine (sounddevice — reserved for future use)
+│   └── engine.py        # Metadata, album art, FFT helpers, SampleLoader
 │
 ├── ui/
 │   ├── main_window.py   # MainWindow — wires everything together
