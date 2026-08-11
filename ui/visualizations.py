@@ -12,12 +12,19 @@ from PyQt6.QtGui     import (
     QColor, QLinearGradient, QPainter, QPen
 )
 
-# Shared constants for frequency-axis labels
-_SAMPLE_RATE = 48_000
-_FFT_BLOCK   = 2_048
-_HZ_PER_BIN  = _SAMPLE_RATE / _FFT_BLOCK
-_FREQ_MIN    = _HZ_PER_BIN
-_FREQ_MAX    = _HZ_PER_BIN * 512
+# Shared constants for frequency-axis labels.
+# The real sample rate depends on the loaded file (44.1/48/96 kHz, ...) and is
+# only known once SampleLoader has decoded it — DEFAULT_SAMPLE_RATE is just the
+# value used until set_sample_rate() is called with the actual rate, matching
+# SampleLoader.FALLBACK_RATE so the two agree before/without a real file.
+_FFT_BLOCK           = 2_048
+_DEFAULT_SAMPLE_RATE = 44_100
+
+
+def _freq_range(sample_rate: int) -> tuple[float, float]:
+    """(freq_min, freq_max) in Hz spanned by the log-scaled frequency axis."""
+    hz_per_bin = sample_rate / _FFT_BLOCK
+    return hz_per_bin, hz_per_bin * 512
 
 
 def _freq_label(freq: int) -> str:
@@ -39,6 +46,13 @@ class SpectrumWidget(QWidget):
         self._smoothed: list[float] = []
         self._primary = "#e94560"
         self._accent  = "#a8c0ff"
+        self._freq_min, self._freq_max = _freq_range(_DEFAULT_SAMPLE_RATE)
+
+    def set_sample_rate(self, sample_rate: int) -> None:
+        """Recompute the frequency-axis labels for the loaded track's real sample rate."""
+        if sample_rate > 0:
+            self._freq_min, self._freq_max = _freq_range(sample_rate)
+            self.update()
 
     def set_bars(self, bars: list[float]) -> None:
         if not self._smoothed or len(self._smoothed) != len(bars):
@@ -89,7 +103,7 @@ class SpectrumWidget(QWidget):
 
         painter.setPen(QColor("#8899aa"))
         for freq in self.FREQ_LABELS:
-            pos = np.log10(freq / _FREQ_MIN) / np.log10(_FREQ_MAX / _FREQ_MIN)
+            pos = np.log10(freq / self._freq_min) / np.log10(self._freq_max / self._freq_min)
             x_lbl = int(pos * w)
             if x_lbl < w - 30:
                 painter.drawText(x_lbl, h, _freq_label(freq))
@@ -109,7 +123,14 @@ class SpectrogramWidget(QWidget):
         self.setMinimumHeight(80)
         self._columns: list[list[float]] = []
         self._max_cols = 200
-    
+        self._freq_min, self._freq_max = _freq_range(_DEFAULT_SAMPLE_RATE)
+
+    def set_sample_rate(self, sample_rate: int) -> None:
+        """Recompute the frequency-axis labels for the loaded track's real sample rate."""
+        if sample_rate > 0:
+            self._freq_min, self._freq_max = _freq_range(sample_rate)
+            self.update()
+
     def set_frames_per_bin(self, n: int) -> None:
         self._frames_per_bin = max(1, n)
         self._frame_acc.clear()
@@ -187,7 +208,7 @@ class SpectrogramWidget(QWidget):
 
         painter.setPen(QColor("#8899aa"))
         for freq in [63, 125, 250, 500, 1_000, 2_000, 4_000, 8_000]:
-            pos   = np.log(freq / _FREQ_MIN) / np.log(_FREQ_MAX / _FREQ_MIN)
+            pos   = np.log(freq / self._freq_min) / np.log(self._freq_max / self._freq_min)
             y_lbl = int(pos * h_spec)
             painter.drawText(2, y_lbl, _freq_label(freq))
 

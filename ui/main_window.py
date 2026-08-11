@@ -249,6 +249,7 @@ class MainWindow(QMainWindow):
 
         # Background audio sample loader
         self._loader = SampleLoader()
+        self._known_sample_rate = 0  # last rate pushed to the freq-axis widgets
 
         # Async metadata worker — keeps UI responsive while reading tags
         self._meta_worker = _MetadataWorker(self)
@@ -1379,6 +1380,11 @@ class MainWindow(QMainWindow):
         samples = self._loader.samples
         if samples is None:
             return
+        sr = self._loader.sample_rate
+        if sr and sr != self._known_sample_rate:
+            self._known_sample_rate = sr
+            self._spectrum.set_sample_rate(sr)
+            self._spectrogram.set_sample_rate(sr)
         pos = self._player.get_position()
         try:
             frame = compute_fft_frame(samples, pos, self._config["bar_count"])
