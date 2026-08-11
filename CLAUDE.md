@@ -76,6 +76,17 @@ to test in isolation. Concrete split points identified by audit:
 - `PlaylistWidget`'s custom `SortableHeader` and `_sort_col`/`_sort_order`
   work around a Qt6 regression in `setSortingEnabled` — don't "simplify" this
   back to the standard Qt sorting API.
+- `MainWindow._media_list_lock` guards only the read/swap of the
+  `self._media_list` *reference* in `_append_to_media_list()` /
+  `_rebuild_media_list()` — never the blocking VLC-level
+  `media_list.lock()/add_media()/unlock()` call. Don't widen it to cover
+  that VLC call "for extra safety": VLC's own lock can block for a while
+  during playback, and `_rebuild_media_list()` runs on the Qt thread, so
+  holding `_media_list_lock` around the VLC call would let a slow VLC lock
+  freeze the UI — exactly what the background-thread design in
+  `_append_to_media_list()` exists to avoid. The residual race (a rebuild
+  landing between the read and the VLC add completing) is handled instead
+  by `_on_media_appended()` detecting the mismatch and retrying.
 
 ## Workflow
 - Commit before any multi-file change; prefer small, reviewable diffs over

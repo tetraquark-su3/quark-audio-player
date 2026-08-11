@@ -207,7 +207,7 @@ class MainWindow(QMainWindow):
     """Quark Audio Player — main application window."""
     _socket_file_received  = pyqtSignal(str)
     _vlc_next_item_signal  = pyqtSignal()   # fired from VLC thread → Qt slot
-    _media_appended_signal = pyqtSignal(int)  # new_row — fired from append thread → Qt slot
+    _media_appended_signal = pyqtSignal(str, object)  # path, target_list — fired from append thread → Qt slot
 
     # ------------------------------------------------------------------
     # Construction
@@ -246,6 +246,12 @@ class MainWindow(QMainWindow):
         )
         self._media_list  = self._vlc.media_list_new()
         self._list_player.set_media_list(self._media_list)
+        # Guards only the read/swap of self._media_list itself — never the
+        # blocking VLC-level media_list.lock()/add_media()/unlock() sequence,
+        # which must stay outside it so a slow VLC lock during playback can
+        # never make _rebuild_media_list() block the Qt thread. See
+        # _append_to_media_list()/_on_media_appended() for the full protocol.
+        self._media_list_lock = threading.Lock()
 
         # Background audio sample loader
         self._loader = SampleLoader()
@@ -804,8 +810,18 @@ class MainWindow(QMainWindow):
         playback (which it frequently does), calling it on the Qt main thread
         causes the UI to freeze for the entire lock duration.  We therefore
         run the lock/add/unlock sequence in a daemon thread and emit a signal
-        back to the Qt thread once done so _media_list_rows and the timers
-        are updated safely.
+        back to the Qt thread once done so the timers are updated safely.
+
+        self._media_list itself can be swapped by _rebuild_media_list() (on
+        the Qt thread) while this daemon thread is running — that's why the
+        list reference is re-read from self._media_list under
+        self._media_list_lock right before use, instead of being captured
+        once up front. The lock only guards that quick read (and the swap in
+        _rebuild_media_list()); it is released before the slow VLC-level
+        lock/add/unlock, so a concurrent rebuild is never blocked on it. If a
+        rebuild still lands in the (now narrow) gap between the read and the
+        VLC add completing, _on_media_appended() detects the mismatch and
+        retries — see there.
         """
         if self._shuffle:
             # In shuffle mode we can't simply append — fall back to a full
@@ -816,26 +832,40 @@ class MainWindow(QMainWindow):
         item = self._playlist.item_by_path(path)
         if item is None:
             return
-        new_row = self._playlist.indexOfTopLevelItem(item)
 
-        media_list = self._media_list   # capture ref; may change if rebuild fires
         vlc_instance = self._vlc
 
         def _do_append():
             media = vlc_instance.media_new(path)
-            media_list.lock()
+            with self._media_list_lock:
+                target_list = self._media_list  # re-read now, not at call time
+            target_list.lock()
             try:
-                media_list.add_media(media)
+                target_list.add_media(media)
             finally:
-                media_list.unlock()
-            # Signal the Qt thread to update _media_list_rows and timers
-            self._media_appended_signal.emit(new_row)
+                target_list.unlock()
+            # Signal the Qt thread with *which* list the media actually
+            # landed in, so it can tell whether a rebuild raced past it.
+            self._media_appended_signal.emit(path, target_list)
 
         threading.Thread(target=_do_append, daemon=True).start()
 
-    @pyqtSlot(int)
-    def _on_media_appended(self, new_row: int) -> None:
+    @pyqtSlot(str, object)
+    def _on_media_appended(self, path: str, target_list) -> None:
         """Called on the Qt thread after a background append completes."""
+        if target_list is not self._media_list:
+            # self._media_list was swapped (a rebuild fired) while the
+            # background add was in flight — the media was added to a list
+            # nobody plays from anymore. Retry against the current list
+            # instead of silently losing the track.
+            self._append_to_media_list(path)
+            return
+
+        item = self._playlist.item_by_path(path)
+        if item is None:
+            return  # track was removed from the playlist in the meantime
+        new_row = self._playlist.indexOfTopLevelItem(item)
+
         # Cancel any pending end-of-playlist grace timer — a new track just
         # arrived so we must not freeze/reset the visualisations.
         self._timer_end_grace.stop()
@@ -852,9 +882,7 @@ class MainWindow(QMainWindow):
             if state in (vlc.State.Ended, vlc.State.Stopped, vlc.State.NothingSpecial):
                 # Playlist had ended — play the newly added track directly
                 # instead of _list_player.play() which restarts from index 0.
-                new_item = self._playlist.item_at_row(new_row)
-                if new_item is not None:
-                    self._play_item(new_item)
+                self._play_item(item)
 
     def _on_drop(self, event) -> None:
         for url in event.mimeData().urls():
@@ -1110,9 +1138,14 @@ class MainWindow(QMainWindow):
             if it is not None:
                 ml.add_media(self._playlist.path_of(it))
 
-        # Swap the list on the player
-        self._media_list = ml
-        self._list_player.set_media_list(ml)
+        # Swap the list on the player. Guarded by the same short lock
+        # _append_to_media_list()'s background thread uses to re-read
+        # self._media_list, so it never sees a half-swapped reference —
+        # see _append_to_media_list()/_on_media_appended() for the full
+        # protocol this is part of.
+        with self._media_list_lock:
+            self._media_list = ml
+            self._list_player.set_media_list(ml)
 
         # Store the row mapping so _on_vlc_next_item can find which
         # playlist row VLC just moved to.
