@@ -163,13 +163,26 @@ class _MetadataWorker(QThread):
     Background thread that reads audio metadata without blocking the UI.
     Push paths with enqueue() or enqueue_many().
     Emits track_ready(path, meta) on the Qt thread for each file.
+
+    Call stop() then a bounded wait() to shut it down cleanly (see
+    MainWindow.closeEvent()). stop() pushes a sentinel onto the queue so
+    run() exits on its own after processing whatever is already queued —
+    that covers the common case (thread idle or between reads). It cannot
+    interrupt a read_metadata() call already in progress on a slow file;
+    there's no safe way to preempt a blocking call from another thread in
+    Python. That's why closeEvent()'s wait() is bounded rather than
+    unconditional — the app must still be able to close promptly even if
+    this thread is stuck, at the cost of Qt's "QThread: Destroyed while
+    thread is still running" warning in that rare case.
     """
     track_ready = pyqtSignal(str, dict)
+
+    _STOP = object()  # sentinel pushed onto the queue to end run()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         import threading
-        self._queue: list[str] = []
+        self._queue: list = []
         self._lock = threading.Lock()
         self._sem  = threading.Semaphore(0)
         self.start()
@@ -185,6 +198,12 @@ class _MetadataWorker(QThread):
         for _ in paths:
             self._sem.release()
 
+    def stop(self) -> None:
+        """Ask run() to exit after it's done with whatever it's currently doing."""
+        with self._lock:
+            self._queue.append(self._STOP)
+        self._sem.release()
+
     def run(self) -> None:
         while True:
             self._sem.acquire()
@@ -192,6 +211,8 @@ class _MetadataWorker(QThread):
                 if not self._queue:
                     continue
                 path = self._queue.pop(0)
+            if path is self._STOP:
+                return
             try:
                 meta = read_metadata(path)
             except Exception:
@@ -1523,4 +1544,12 @@ class MainWindow(QMainWindow):
         self._timer_progress.stop()
         self._timer_end_grace.stop()
         self._save_playlist()
+
+        # Ask the metadata worker to stop and give it a bounded moment to do
+        # so cleanly. If it's stuck in a slow read_metadata() call, wait()
+        # times out and we close anyway rather than hang the app shut down
+        # (see _MetadataWorker's docstring for why that's the trade-off).
+        self._meta_worker.stop()
+        self._meta_worker.wait(2000)
+
         event.accept()
