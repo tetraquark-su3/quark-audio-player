@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui  import QColor, QFont, QKeySequence
 from ui.widgets import ShortcutField
-from config.settings import DEFAULT_CONFIG
+from config.settings import DEFAULT_CONFIG, derive_color
 
 
 class EqualizerDialog(QDialog):
@@ -311,11 +311,18 @@ class SettingsDialog(QDialog):
 
         # Shortcuts
         self._shortcut_fields: dict[str, QLineEdit] = {}
-        shortcuts = self._config.get("shortcuts", DEFAULT_CONFIG["shortcuts"])
-        primary_color = self._config.get("primary_color", "#e94560")
+        shortcuts         = self._config.get("shortcuts", DEFAULT_CONFIG["shortcuts"])
+        primary_color     = self._config.get("primary_color",    "#e94560")
+        accent_color      = self._config.get("accent_color",     "#a8c0ff")
+        background_color  = self._config.get("background_color", "#1a1a2e")
+        # ShortcutField isn't styled through the global QSS (ui/style.py), so
+        # it needs its own subtle border derived from the current background
+        # instead of a color hardcoded for a dark theme.
+        border_color = derive_color(background_color, 32)
         for key, label in self.SHORTCUT_LABELS.items():
             field = ShortcutField()
             field.set_focus_color(primary_color)
+            field.set_theme(background_color, border_color, accent_color)
             field.setText(shortcuts.get(key, DEFAULT_CONFIG["shortcuts"][key]))
             field.setFixedHeight(28)
             self._shortcut_fields[key] = field
