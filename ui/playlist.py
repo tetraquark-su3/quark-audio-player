@@ -275,7 +275,21 @@ class PlaylistWidget(QTreeWidget):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             idx = self.indexAt(event.position().toPoint())
-            self._drag_start_row = idx.row() if idx.isValid() else None
+            if not idx.isValid():
+                # Clic dans une zone vide : déselectionner tout
+                self.clearSelection()
+                self._drag_start_row = None
+                return
+            self._drag_start_row = idx.row()
+            modifiers = event.modifiers()
+            if not (modifiers & Qt.KeyboardModifier.ControlModifier
+                    or modifiers & Qt.KeyboardModifier.ShiftModifier):
+                # Clic simple sans modificateur : forcer SingleSelection
+                # pour eviter que Qt etende la selection vers des items voisins
+                self.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
+                super().mousePressEvent(event)
+                self.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:

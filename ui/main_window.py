@@ -216,7 +216,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._vlc = vlc.Instance("--reset-plugins-cache")
-        self.setWindowTitle("Quark Audio Player v0.6.5")
+        self.setWindowTitle("Quark Audio Player v0.6.6")
         app_icon_path = os.path.join(ASSETS_DIR, "icon_app.png")
         if os.path.exists(app_icon_path):
             self.setWindowIcon(QIcon(app_icon_path))
@@ -1067,6 +1067,7 @@ class MainWindow(QMainWindow):
 
         self._current_track = row
         self._current_item  = item
+        self._playlist.clearSelection()
         self._playlist.setCurrentItem(item)
 
         self._update_ui_for_track(path)
@@ -1173,7 +1174,13 @@ class MainWindow(QMainWindow):
         import urllib.parse
         mrl = current_media.get_mrl()
         if mrl.startswith("file://"):
-            new_path = urllib.parse.unquote(mrl[7:])
+            # urlparse handles both Unix (file:///home/...) and Windows
+            # (file:///C:/...) correctly; mrl[7:] left a leading slash on
+            # Windows paths (/C:/Music/...) which broke the playlist lookup.
+            new_path = urllib.parse.unquote(urllib.parse.urlparse(mrl).path)
+            if sys.platform == "win32" and len(new_path) > 2 \
+                    and new_path[0] == "/" and new_path[2] == ":":
+                new_path = new_path[1:]  # /C:/foo → C:/foo
         else:
             new_path = mrl
 
@@ -1194,7 +1201,9 @@ class MainWindow(QMainWindow):
         new_row = self._playlist.indexOfTopLevelItem(new_item)
         self._current_track = new_row
         self._current_item  = new_item
+        self._playlist.clearSelection()
         self._playlist.setCurrentItem(new_item)
+        self._playlist.scrollToItem(new_item)   # keep current track visible
         self._update_ui_for_track(new_path)
         self._apply_eq()
         self._loader.load(new_path)

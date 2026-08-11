@@ -41,6 +41,7 @@ quark_audio_player/
 │   ├── playlist.py      # PlaylistWidget (O(1) duplicate check, custom sort header)
 │   ├── visualizations.py# 6 visualisation widgets
 │   ├── dialogs.py       # SettingsDialog, EqualizerDialog
+|   |── icons.py         # Style constants, icons definitions and per-style builder,
 │   ├── widgets.py       # ClickableSlider, DropArea, ShortcutField
 │   └── style.py         # QSS stylesheet builder
 │
