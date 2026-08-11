@@ -187,6 +187,8 @@ class SpectrogramWidget(QWidget):
         col_w  = w / self._max_cols
         for ci, col in enumerate(self._columns):
             n_bins = len(col)
+            if n_bins == 0:
+                continue  # nothing to draw; np.log(0) below would be -inf/NaN
             x  = int(ci * col_w)
             lw = max(1, int(col_w) + 1)
             for pi in range(h_spec):
