@@ -263,8 +263,8 @@ def _icon_load(a: dict) -> str:
 
 def _icon_no_art(a: dict) -> str:
     """Album cover placeholder: a stylised vinyl record (concentric circles)."""
-    color  = a.get("_accent",  "#ffffff")
-    accent = a.get("_primary", "#aaaaaa")
+    color  = a.get("_primary", "#ffffff")
+    accent = a.get("_accent",  "#aaaaaa")
     sw     = a["stroke_width"] if a["stroke_width"] != "0" else "2.5"
     r, g, b = _hex_to_rgb(color)
     fill_bg = "rgba({},{},{},0.15)".format(r, g, b)
