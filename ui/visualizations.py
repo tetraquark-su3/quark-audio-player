@@ -138,7 +138,7 @@ class SpectrogramWidget(QWidget):
         self.update()
 
     def set_max_cols(self, n: int) -> None:
-        self._max_cols = n
+        self._max_cols = max(1, n)
         if len(self._columns) > self._max_cols:
             self._columns = self._columns[-self._max_cols:]
         self.update()
