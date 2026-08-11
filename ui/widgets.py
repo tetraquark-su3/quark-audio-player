@@ -66,8 +66,9 @@ class ClickableSlider(QSlider):
     """Slider that jumps to wherever the user clicks (not just drags)."""
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            value = round(event.position().x() / self.width() * self.maximum())
+        if event.button() == Qt.MouseButton.LeftButton and self.width() > 0:
+            span  = self.maximum() - self.minimum()
+            value = self.minimum() + round(event.position().x() / self.width() * span)
             self.setValue(value)
             self.sliderMoved.emit(value)
         super().mousePressEvent(event)
