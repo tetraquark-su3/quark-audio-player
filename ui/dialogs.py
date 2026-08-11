@@ -389,8 +389,13 @@ class SettingsDialog(QDialog):
         frames = self._config.get("spectrogram_resolution", 15)
         self._spin_spectrogram_res.setValue(round(frames / fps, 1))
         self._btn_font.setText(f"{fam} {sz}pt")
-        shortcuts = self._config.get("shortcuts", DEFAULT_CONFIG["shortcuts"])
+        shortcuts    = self._config.get("shortcuts", DEFAULT_CONFIG["shortcuts"])
+        border_color = derive_color(self._config["background_color"], 32)
         for key, field in self._shortcut_fields.items():
+            field.set_focus_color(self._config["primary_color"])
+            field.set_theme(
+                self._config["background_color"], border_color, self._config["accent_color"]
+            )
             field.setText(shortcuts.get(key, ""))
 
     def _on_accept(self) -> None:
