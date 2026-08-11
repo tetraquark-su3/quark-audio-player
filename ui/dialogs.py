@@ -103,6 +103,22 @@ class EqualizerDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # libvlc_audio_equalizer_new() returns NULL if this VLC build/install
+        # does not support the audio equalizer. Disable the interactive
+        # controls and warn instead of crashing on the first slider move.
+        if self._equalizer is None:
+            self._combo_presets.setEnabled(False)
+            self._slider_preamp.setEnabled(False)
+            for sl in self._sliders:
+                sl.setEnabled(False)
+            btn_reset.setEnabled(False)
+            QMessageBox.warning(
+                self, "Equalizer unavailable",
+                "This VLC installation does not support the audio equalizer.\n"
+                "Equalizer controls have been disabled.",
+            )
+            return
+
         # Restore previously saved state (if any) into sliders + equalizer object
         if self._eq_state:
             preamp = self._eq_state.get("preamp", 0.0)
@@ -135,18 +151,24 @@ class EqualizerDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _update_band(self, idx: int, value: int) -> None:
+        if self._equalizer is None:
+            return
         db = value / 10.0
         self._lbl_vals[idx].setText(f"{db:.1f}")
         vlc.libvlc_audio_equalizer_set_amp_at_index(self._equalizer, db, idx)
         vlc.libvlc_media_player_set_equalizer(self._player, self._equalizer)
 
     def _update_preamp(self, value: int) -> None:
+        if self._equalizer is None:
+            return
         db = value / 10.0
         self._lbl_preamp.setText(f"{db:.1f} dB")
         vlc.libvlc_audio_equalizer_set_preamp(self._equalizer, db)
         vlc.libvlc_media_player_set_equalizer(self._player, self._equalizer)
 
     def _apply_preset(self, index: int) -> None:
+        if self._equalizer is None:
+            return
         eq = vlc.libvlc_audio_equalizer_new_from_preset(index)
         # Block slider signals while loading preset values to avoid redundant
         # set_equalizer calls; one final call is made after all values are set.
@@ -178,6 +200,8 @@ class EqualizerDialog(QDialog):
         }
 
     def _reset(self) -> None:
+        if self._equalizer is None:
+            return
         # Block signals, zero everything in the equalizer object, then attach once.
         self._slider_preamp.blockSignals(True)
         for sl in self._sliders:
