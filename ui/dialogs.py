@@ -278,8 +278,6 @@ class SettingsDialog(QDialog):
         # FPS
         self._spin_fps = QSpinBox()
         self._spin_fps.setRange(10, 60)
-        self._combo_icon_style.setCurrentIndex(
-            self._combo_icon_style.findData(self._config.get("icon_style", "neon")))
         self._spin_fps.setValue(self._config["fps"])
         self._spin_fps.setSuffix(" fps")
         layout.addRow("Refresh rate:", self._spin_fps)
