@@ -1263,7 +1263,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_mute(self) -> None:
         if self._btn_mute.isChecked():
-            self._volume_before_mute = self._player.audio_get_volume()
+            self._volume_before_mute = self._volume.value()
             self._player.audio_set_volume(0)
         else:
             restored = getattr(self, "_volume_before_mute", 80)
