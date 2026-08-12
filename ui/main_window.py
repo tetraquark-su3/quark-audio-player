@@ -13,7 +13,7 @@ import random
 import threading
 import numpy as np
 import vlc
-from PyQt6.QtCore    import QDir, QModelIndex, Qt, QTimer, QSize, QThread, pyqtSlot, pyqtSignal
+from PyQt6.QtCore    import QDir, QModelIndex, Qt, QTimer, QThread, pyqtSlot, pyqtSignal
 from PyQt6.QtGui     import QColor, QKeySequence, QPixmap, QShortcut, QIcon, QPainter, QFileSystemModel, QPen
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout,
@@ -29,6 +29,7 @@ from config.settings  import (
     is_audio, load_config, save_config,
 )
 from ui.dialogs       import EqualizerDialog, SettingsDialog
+from ui.icon_manager  import IconManager
 from ui.playlist      import PlaylistWidget
 from ui.playlist_persistence import PlaylistPersistence, PlaylistPersistenceError
 from ui.style         import build_stylesheet
@@ -37,7 +38,7 @@ from ui.visualizations import (
     SpectrogramWidget, SpectrumWidget, VUMeterWidget,
 )
 from ui.widgets       import ClickableSlider
-from ui.icons        import load_icon, render_no_art_pixmap, ICON_STYLES
+from ui.icons        import render_no_art_pixmap, ICON_STYLES
 
 # ---------------------------------------------------------------------------
 # Styled splitter — wide handle with visible grip dots + hover highlight
@@ -132,24 +133,6 @@ class _StyledSplitter(QSplitter):
             if isinstance(h, _StyledSplitterHandle):
                 h.update_colors(primary, surface, dot)
 
-
-ICON_MAP = {
-    "Settings": "icon_settings",
-    "|<":       "icon_prev",
-    ">":        "icon_play",
-    "||":       "icon_pause",
-    "[]":       "icon_stop",
-    ">|":       "icon_next",
-    "Shuffle":  "icon_shuffle",
-    "Repeat":   "icon_repeat",
-    "Save":     "icon_save",
-    "Load":     "icon_load",
-    "EQ":       "icon_eq",
-    "Volume":   "icon_volume",
-    "Muted":    "icon_mute",
-    "no_art":   "icon_no_art",
-
-}
 
 BASE_DIR  = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
@@ -302,6 +285,7 @@ class MainWindow(QMainWindow):
 
 
         self._playlist_persistence = PlaylistPersistence(PLAYLIST_PATH)
+        self._icon_manager = IconManager(ASSETS_DIR)
 
         self._build_ui()
         self._apply_config()
@@ -585,23 +569,21 @@ class MainWindow(QMainWindow):
             "EQ":       self._btn_eq,
             "Volume":   self._btn_mute,
         }
+        self._icon_manager.register_buttons(self._icon_buttons)
 
         self._show_no_art()
         
     def _refresh_icons(self) -> None:
         """Retint all button icons to match the current background."""
-        for label, btn in self._icon_buttons.items():
-            icon_name = ICON_MAP.get(label, "")
-            if icon_name:
-                btn.setIcon(self._load_icon(icon_name))
-        # play button may currently show pause icon
-        self._set_play_icon(self._player.is_playing())
-        # mute button may currently show muted icon
-        if self._btn_mute.isChecked():
-            self._btn_mute.setIcon(self._load_icon(ICON_MAP["Muted"]))
-        # shuffle/repeat: accent-swapped icon when active
-        self._set_toggle_icon(self._btn_shuffle, "icon_shuffle", self._shuffle)
-        self._set_toggle_icon(self._btn_repeat,  "icon_repeat",  self._repeat)
+        self._icon_manager.refresh_all(
+            style   = self._config.get("icon_style", "neon"),
+            primary = self._config["primary_color"],
+            accent  = self._config["accent_color"],
+            playing = self._player.is_playing(),
+            muted   = self._btn_mute.isChecked(),
+            shuffle_active = self._shuffle,
+            repeat_active  = self._repeat,
+        )
 
     # ------------------------------------------------------------------
     # Button factory
@@ -611,13 +593,13 @@ class MainWindow(QMainWindow):
         """Generate a themed SVG icon, with PNG fallback.
         override_primary/accent allow swapping colours for active toggle states.
         """
-        return load_icon(
-            name  = name,
-            style = self._config.get("icon_style", "neon"),
-            primary = override_primary or self._config["primary_color"],
-            accent  = override_accent  or self._config["accent_color"],
-            pixel_size = 32,
-            assets_dir = ASSETS_DIR,
+        return self._icon_manager.load_icon(
+            name,
+            style   = self._config.get("icon_style", "neon"),
+            primary = self._config["primary_color"],
+            accent  = self._config["accent_color"],
+            override_primary = override_primary,
+            override_accent  = override_accent,
         )
 
     def _ctrl_btn(self, label, slot, checkable=False):
@@ -626,12 +608,12 @@ class MainWindow(QMainWindow):
         btn.setFixedSize(54, 36)
         btn.setCheckable(checkable)
         btn.clicked.connect(slot)
-        icon_path = os.path.join(ASSETS_DIR, f"{ICON_MAP.get(label, '')}.png")
-        if os.path.exists(icon_path):
-            btn.setIcon(self._load_icon(ICON_MAP.get(label, '')))
-            btn.setIconSize(QSize(22, 22))
-        else:
-            btn.setText(label)   # fallback
+        self._icon_manager.initial_button_icon(
+            btn, label,
+            style   = self._config.get("icon_style", "neon"),
+            primary = self._config["primary_color"],
+            accent  = self._config["accent_color"],
+        )
         tooltip_map = {
             "Settings": "Settings",
             "|<":       "Previous track",
@@ -1080,12 +1062,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
         
     def _set_play_icon(self, playing: bool) -> None:
-        label = "||" if playing else ">"
-        icon_path = os.path.join(ASSETS_DIR, f"{ICON_MAP[label]}.png")
-        if os.path.exists(icon_path):
-            self._btn_play.setIcon(self._load_icon(ICON_MAP[label]))
-        else:
-            self._btn_play.setText(label)
+        self._icon_manager.set_play_icon(
+            self._btn_play, playing,
+            style   = self._config.get("icon_style", "neon"),
+            primary = self._config["primary_color"],
+            accent  = self._config["accent_color"],
+        )
 
 
     def _play_item(self, item) -> None:
@@ -1282,19 +1264,15 @@ class MainWindow(QMainWindow):
         if self._btn_mute.isChecked():
             self._volume_before_mute = self._player.audio_get_volume()
             self._player.audio_set_volume(0)
-            icon_name = ICON_MAP["Muted"]
-            if os.path.exists(os.path.join(ASSETS_DIR, f"{icon_name}.png")):
-                self._btn_mute.setIcon(self._load_icon(icon_name))
-            else:
-                self._btn_mute.setText("Muted")
         else:
             self._player.audio_set_volume(getattr(self, "_volume_before_mute", 80))
             self._volume.setValue(self._player.audio_get_volume())
-            icon_name = ICON_MAP["Volume"]
-            if os.path.exists(os.path.join(ASSETS_DIR, f"{icon_name}.png")):
-                self._btn_mute.setIcon(self._load_icon(icon_name))
-            else:
-                self._btn_mute.setText("Volume")
+        self._icon_manager.set_mute_icon(
+            self._btn_mute, self._btn_mute.isChecked(),
+            style   = self._config.get("icon_style", "neon"),
+            primary = self._config["primary_color"],
+            accent  = self._config["accent_color"],
+        )
 
     def _reset_visualizations(self) -> None:
         """Reset all visualisation widgets to their blank/idle state."""
@@ -1342,14 +1320,12 @@ class MainWindow(QMainWindow):
 
     def _set_toggle_icon(self, btn, icon_name: str, active: bool) -> None:
         """Regenerate a toggle button icon with swapped colours when active."""
-        if active:
-            icon = self._load_icon(icon_name,
-                                   override_primary=self._config["accent_color"],
-                                   override_accent=self._config["primary_color"])
-        else:
-            icon = self._load_icon(icon_name)
-        btn.setIcon(icon)
-        btn.setIconSize(QSize(22, 22))
+        self._icon_manager.set_toggle_icon(
+            btn, icon_name, active,
+            style   = self._config.get("icon_style", "neon"),
+            primary = self._config["primary_color"],
+            accent  = self._config["accent_color"],
+        )
 
     def _toggle_shuffle(self) -> None:
         self._shuffle = self._btn_shuffle.isChecked()
