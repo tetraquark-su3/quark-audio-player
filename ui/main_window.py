@@ -526,6 +526,7 @@ class MainWindow(QMainWindow):
         self._volume.setObjectName("volumeSlider")
         self._volume.setRange(0, 100)
         self._volume.setValue(80)
+        self._volume_before_mute = 80
         self._volume.setFixedWidth(100)
         self._volume.setFixedHeight(36)
         self._volume_label = QLabel("80%")
@@ -1265,8 +1266,9 @@ class MainWindow(QMainWindow):
             self._volume_before_mute = self._player.audio_get_volume()
             self._player.audio_set_volume(0)
         else:
-            self._player.audio_set_volume(getattr(self, "_volume_before_mute", 80))
-            self._volume.setValue(self._player.audio_get_volume())
+            restored = getattr(self, "_volume_before_mute", 80)
+            self._player.audio_set_volume(restored)
+            self._volume.setValue(restored)
         self._icon_manager.set_mute_icon(
             self._btn_mute, self._btn_mute.isChecked(),
             style   = self._config.get("icon_style", "neon"),
