@@ -1,1 +1,10 @@
 pytest
+
+# PyQt6 is a runtime dependency of the app (see main.py), not test-only —
+# but it's listed here too because tests/test_icon_manager.py imports
+# ui.icon_manager, which imports PyQt6 (QIcon/QSize/QPushButton) at module
+# level. Even the Qt-free tests in that file (toggle_icon_colors, ICON_MAP)
+# fail to *import* without PyQt6 installed, though they never need a live
+# QApplication. Without this line, `pip install -r requirements-dev.txt &&
+# pytest` fails on a fresh clone with ImportError: No module named 'PyQt6'.
+PyQt6
