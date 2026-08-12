@@ -6,7 +6,6 @@ file browser, settings, equalizer, and keyboard shortcuts.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import re
@@ -31,6 +30,7 @@ from config.settings  import (
 )
 from ui.dialogs       import EqualizerDialog, SettingsDialog
 from ui.playlist      import PlaylistWidget
+from ui.playlist_persistence import PlaylistPersistence, PlaylistPersistenceError
 from ui.style         import build_stylesheet
 from ui.visualizations import (
     LissajousWidget, OscilloscopeWidget, SpectralFluxWidget,
@@ -300,6 +300,8 @@ class MainWindow(QMainWindow):
         self._timer_end_grace.setInterval(200)
         self._timer_end_grace.timeout.connect(self._on_end_grace_timeout)
 
+
+        self._playlist_persistence = PlaylistPersistence(PLAYLIST_PATH)
 
         self._build_ui()
         self._apply_config()
@@ -923,20 +925,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _load_playlist(self) -> None:
-        if not os.path.exists(PLAYLIST_PATH):
-            return
         try:
-            with open(PLAYLIST_PATH) as f:
-                data = json.load(f)
-            self._playlist.from_list(data, replace=True)
-        except Exception as e:
+            data = self._playlist_persistence.load_default()
+        except PlaylistPersistenceError as e:
             print(f"[Playlist] Cannot load: {e}")
+            return
+        if data is not None:
+            self._playlist.from_list(data, replace=True)
 
     def _save_playlist(self) -> None:
         try:
-            with open(PLAYLIST_PATH, "w") as f:
-                json.dump(self._playlist.to_list(), f, indent=2)
-        except Exception as e:
+            self._playlist_persistence.save_default(self._playlist.to_list())
+        except PlaylistPersistenceError as e:
             print(f"[Playlist] Cannot save: {e}")
 
     def _save_playlist_as(self) -> None:
@@ -948,10 +948,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            with open(path, "w") as f:
-                json.dump(self._playlist.to_list(), f, indent=2)
+            self._playlist_persistence.save(path, self._playlist.to_list())
             self.statusBar().showMessage(f"Saved: {os.path.basename(path)}")
-        except Exception as e:
+        except PlaylistPersistenceError as e:
             self.statusBar().showMessage(f"Error: {e}")
 
     def _load_playlist_from(self) -> None:
@@ -974,11 +973,10 @@ class MainWindow(QMainWindow):
             return
         replace = (choice == QMessageBox.StandardButton.Reset)
         try:
-            with open(path) as f:
-                data = json.load(f)
+            data = self._playlist_persistence.load(path)
             count = self._playlist.from_list(data, replace=replace)
             self.statusBar().showMessage(f"{count} tracks loaded from {os.path.basename(path)}")
-        except Exception as e:
+        except PlaylistPersistenceError as e:
             self.statusBar().showMessage(f"Error: {e}")
 
     # ------------------------------------------------------------------
