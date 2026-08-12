@@ -13,7 +13,14 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 - Windows standalone build: PyInstaller via `quark-player.spec`. That spec
   currently hardcodes Linux paths (`/usr/lib/x86_64-linux-gnu/...`) for the
   VLC binaries — it needs OS-specific paths before it will build on Windows.
-- No test suite exists yet. Don't assume one when asked to "verify" something.
+- Tests: `pytest` (config in `pyproject.toml`, dev deps in
+  `requirements-dev.txt` — includes PyQt6, since `ui/icon_manager.py` needs
+  it at import time even for its Qt-free tests). Run with `pytest` from the
+  repo root; test files live in `tests/`. Coverage is still partial — only
+  `ui/playlist_persistence.py` and the pure/static slice of
+  `ui/icon_manager.py` are tested. Most of `MainWindow` and the rest of the
+  app have no automated tests yet — don't assume broader coverage exists
+  when asked to "verify" something.
 
 ## Architecture map
 - `main.py` — entry point; single-instance lock (`fcntl`) + localhost socket
@@ -28,11 +35,23 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   compensate VLC's reported decoder position with `audio_get_delay()` so
   visuals match what's actually audible) — **dead code**, no callers found
   anywhere in the project; see Dead code below.
-- `ui/main_window.py` — `MainWindow`, ~1500 lines. Wires VLC (`MediaPlayer` +
+- `ui/main_window.py` — `MainWindow`, ~1530 lines. Wires VLC (`MediaPlayer` +
   `MediaListPlayer`) to the playlist, visualisations, file browser, settings,
   EQ, and shortcuts. One large class doing both UI construction and playback
-  logic — a natural split candidate, not a "just rewrite it" candidate. See
-  MainWindow extraction candidates below for concrete split points.
+  logic — a natural split candidate, not a "just rewrite it" candidate. Two
+  of the seven split points below have been extracted so far
+  (`PlaylistPersistence`, `IconManager`); see MainWindow extraction
+  candidates below for the rest.
+- `ui/playlist_persistence.py` — JSON load/save/save-as for the playlist
+  track list, extracted from `MainWindow`. Pure Python, no Qt/VLC
+  dependency; tested in `tests/test_playlist_persistence.py`.
+- `ui/icon_manager.py` — button icon generation/theming (SVG→`QPixmap`→
+  `QIcon`, PNG fallback, primary/accent toggle-color swap), extracted from
+  `MainWindow`. Unlike `playlist_persistence.py` it has real Qt surface
+  (constructs `QIcon`, calls `QPushButton.setIcon`), so only its pure helper
+  (`toggle_icon_colors`) and `ICON_MAP`'s static structure are unit-tested
+  (`tests/test_icon_manager.py`) — the Qt-touching methods need a live
+  `QApplication`, which this project doesn't bootstrap in tests.
 - `ui/playlist.py`, `ui/visualizations.py`, `ui/dialogs.py`, `ui/widgets.py`,
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
@@ -48,15 +67,27 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 ## MainWindow extraction candidates
 `MainWindow.__init__`/`_build_ui` currently mix VLC wiring, UI construction,
 and playback logic in ~340 lines with no separation, making the wiring hard
-to test in isolation. Concrete split points identified by audit:
+to test in isolation. Concrete split points identified by audit. Progress:
+2 of 7 done, 5 remaining.
+
+Done:
+- `PlaylistPersistence` (`ui/playlist_persistence.py`) — load/save/save-as
+  JSON, testable without Qt. Extracted, tested, pushed.
+- `IconManager` (`ui/icon_manager.py`) — `_load_icon`, `_refresh_icons`,
+  `ICON_MAP`, `_icon_buttons`. Extracted, tested, pushed. Scope note: this
+  covers only the "Icon" half of the originally-named "IconManager/
+  ThemeManager" candidate — the broader theming still in
+  `MainWindow._apply_config` (QSS regen via `build_stylesheet`,
+  splitter-handle colors via `derive_color`, visualization `set_colors`,
+  playlist accent color) is untouched; a separate future "ThemeManager"
+  extraction would cover that if ever done.
+
+Remaining (next step, in no particular order):
 - `PlaybackController` — VLC player/list_player, current track/item, shuffle,
   repeat, EQ apply, progress/end timers.
 - `PlaylistIngestionManager` — `_MetadataWorker` + `_add_file(s)`/
   `_add_folder` + `_append_to_media_list`.
 - `FileBrowserPanel` — file tree, root combo, mount-point enumeration.
-- `IconManager`/`ThemeManager` — `_load_icon`, `_refresh_icons`, `ICON_MAP`,
-  `_icon_buttons`.
-- `PlaylistPersistence` — load/save/save-as JSON, testable without Qt.
 - `AlbumArtPanel` — update/viewer/no-art handling.
 - `SettingsController` — `_config`, `_apply_config`, `_apply_shortcuts`,
   settings/EQ dialogs.
@@ -87,6 +118,15 @@ to test in isolation. Concrete split points identified by audit:
   `_append_to_media_list()` exists to avoid. The residual race (a rebuild
   landing between the read and the VLC add completing) is handled instead
   by `_on_media_appended()` detecting the mismatch and retrying.
+- `MainWindow._toggle_mute` captures the pre-mute volume from
+  `self._volume.value()` (the Qt slider), not `self._player.audio_get_volume()`
+  (VLC). VLC's `audio_get_volume()` can return `-1` when no audio output is
+  active yet (e.g. no media loaded/played), and even when it doesn't, its
+  value isn't guaranteed to exactly match what was last set. The slider is
+  the actual source of truth for "what volume the user wants" — VLC is just
+  downstream of it via `_on_volume_changed`. Don't "simplify" this back to
+  reading VLC; that round-trip is what caused the mute/unmute-resets-to-0%
+  bug fixed in this history.
 
 ## Workflow
 - Commit before any multi-file change; prefer small, reviewable diffs over
