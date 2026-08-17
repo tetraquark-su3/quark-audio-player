@@ -14,7 +14,7 @@ import threading
 import numpy as np
 import vlc
 from PyQt6.QtCore    import QDir, QModelIndex, Qt, QTimer, QThread, pyqtSlot, pyqtSignal
-from PyQt6.QtGui     import QColor, QKeySequence, QPixmap, QShortcut, QIcon, QPainter, QFileSystemModel, QPen
+from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter, QFileSystemModel, QPen
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QSplitter, QSplitterHandle, QTabWidget,
@@ -22,12 +22,13 @@ from PyQt6.QtWidgets import (
     QLineEdit
 )
 from audio.engine     import (
-    SampleLoader, build_detail_text, compute_fft_frame, read_album_art, read_metadata,
+    SampleLoader, build_detail_text, compute_fft_frame, read_metadata,
 )
 from config.settings  import (
     DEFAULT_CONFIG, PLAYLIST_PATH,
     is_audio, load_config, save_config,
 )
+from ui.album_art_panel import AlbumArtPanel
 from ui.dialogs       import EqualizerDialog, SettingsDialog
 from ui.icon_manager  import IconManager
 from ui.playlist      import PlaylistWidget
@@ -38,7 +39,7 @@ from ui.visualizations import (
     SpectrogramWidget, SpectrumWidget, VUMeterWidget,
 )
 from ui.widgets       import ClickableSlider
-from ui.icons        import render_no_art_pixmap, ICON_STYLES
+from ui.icons        import ICON_STYLES
 
 # ---------------------------------------------------------------------------
 # Styled splitter — wide handle with visible grip dots + hover highlight
@@ -456,14 +457,8 @@ class MainWindow(QMainWindow):
         art_col.setContentsMargins(0, 0, 0, 0)
         art_col.setSpacing(4)
 
-        self._album_art = QLabel()
-        self._album_art.setFixedSize(150, 150)
-        self._album_art.setObjectName("albumArt")
-        self._album_art.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._album_art.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._album_art.mousePressEvent = lambda _e: self._open_art_viewer()
+        self._album_art = AlbumArtPanel()
         art_col.addWidget(self._album_art)
-        self._full_art_pixmap: QPixmap | None = None
 
         cb_layout.addLayout(art_col)
 
@@ -572,8 +567,12 @@ class MainWindow(QMainWindow):
         }
         self._icon_manager.register_buttons(self._icon_buttons)
 
-        self._show_no_art()
-        
+        self._album_art.show_no_art(
+            self._config.get("icon_style", "neon"),
+            self._config["primary_color"],
+            self._config["accent_color"],
+        )
+
     def _refresh_icons(self) -> None:
         """Retint all button icons to match the current background."""
         self._icon_manager.refresh_all(
@@ -663,8 +662,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_icon_buttons"):
             self._refresh_icons()
         # Re-render the vinyl placeholder with the new style/colors
-        if hasattr(self, "_album_art") and self._full_art_pixmap is None:
-            self._show_no_art()
+        if hasattr(self, "_album_art") and not self._album_art.has_art:
+            self._album_art.show_no_art(self._config.get("icon_style", "neon"), cp, ca)
 
     def _apply_shortcuts(self) -> None:
         for sc in self._shortcuts.values():
@@ -973,95 +972,10 @@ class MainWindow(QMainWindow):
                 build_detail_text(self._playlist.path_of(items[0]))
             )
 
-    def _update_album_art(self, path: str) -> None:
-        original, display = read_album_art(path)
-        self._full_art_bytes = original  # raw bytes for lossless save
-        if display:
-            px = QPixmap()
-            px.loadFromData(display)
-            if not px.isNull():
-                # Downscale giant covers for display only (original kept intact)
-                if px.width() > 1200 or px.height() > 1200:
-                    px = px.scaled(1200, 1200,
-                                   Qt.AspectRatioMode.KeepAspectRatio,
-                                   Qt.TransformationMode.SmoothTransformation)
-                self._full_art_pixmap = px
-                thumb = px.scaled(150, 150,
-                                  Qt.AspectRatioMode.KeepAspectRatio,
-                                  Qt.TransformationMode.SmoothTransformation)
-                self._album_art.setPixmap(thumb)
-                self._album_art.setText("")
-                return
-        self._full_art_bytes = None
-        self._full_art_pixmap = None
-        self._show_no_art()
-
-    def _open_art_viewer(self) -> None:
-        """Fullscreen-ish dialog showing the album art with a Save button."""
-        if not self._full_art_pixmap or self._full_art_pixmap.isNull():
-            return
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QScrollArea
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Album Art")
-        dlg.resize(700, 730)
-        vlay = QVBoxLayout(dlg)
-        vlay.setContentsMargins(10, 10, 10, 10)
-        vlay.setSpacing(8)
-
-        img_label = QLabel()
-        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        img_label.setPixmap(self._full_art_pixmap.scaled(
-            660, 640,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        ))
-        scroll = QScrollArea()
-        scroll.setWidget(img_label)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(scroll.Shape.NoFrame)
-        vlay.addWidget(scroll)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_save = QPushButton("Save image…")
-
-        def _save():
-            path, _ = QFileDialog.getSaveFileName(
-                dlg, "Save album art",
-                os.path.expanduser("~/cover.jpg"),
-                "JPEG (*.jpg);;PNG (*.png)",
-            )
-            if path:
-                if self._full_art_bytes:
-                    with open(path, "wb") as f:
-                        f.write(self._full_art_bytes)
-                else:
-                    fmt = "PNG" if path.lower().endswith(".png") else "JPEG"
-                    self._full_art_pixmap.save(path, fmt, 95)
-                self.statusBar().showMessage(f"Saved: {os.path.basename(path)}")
-
-        btn_save.clicked.connect(_save)
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(dlg.accept)
-        btn_row.addWidget(btn_save)
-        btn_row.addWidget(btn_close)
-        vlay.addLayout(btn_row)
-        dlg.exec()
-
-    def _show_no_art(self) -> None:
-        px = render_no_art_pixmap(
-            style   = self._config.get("icon_style", "neon"),
-            primary = self._config["primary_color"],
-            accent  = self._config["accent_color"],
-            size    = 150,
-        )
-        self._album_art.setPixmap(px)
-        self._album_art.setText("")
-
     # ------------------------------------------------------------------
     # Playback
     # ------------------------------------------------------------------
-        
+
     def _set_play_icon(self, playing: bool) -> None:
         self._icon_manager.set_play_icon(
             self._btn_play, playing,
@@ -1158,7 +1072,12 @@ class MainWindow(QMainWindow):
         self._label_tech.setText(f"{br}  ·  {sr}" if br and sr else br or sr)
         self._label_year.setText(year)
 
-        self._update_album_art(path)
+        self._album_art.update_for_track(
+            path,
+            style   = self._config.get("icon_style", "neon"),
+            primary = self._config["primary_color"],
+            accent  = self._config["accent_color"],
+        )
         self._set_play_icon(True)
         self._detail_text.setText(build_detail_text(path))
         self.statusBar().showMessage(f"Playing: {artist} — {title}")

@@ -35,13 +35,13 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   compensate VLC's reported decoder position with `audio_get_delay()` so
   visuals match what's actually audible) — **dead code**, no callers found
   anywhere in the project; see Dead code below.
-- `ui/main_window.py` — `MainWindow`, ~1530 lines. Wires VLC (`MediaPlayer` +
+- `ui/main_window.py` — `MainWindow`, ~1450 lines. Wires VLC (`MediaPlayer` +
   `MediaListPlayer`) to the playlist, visualisations, file browser, settings,
   EQ, and shortcuts. One large class doing both UI construction and playback
-  logic — a natural split candidate, not a "just rewrite it" candidate. Two
+  logic — a natural split candidate, not a "just rewrite it" candidate. Three
   of the seven split points below have been extracted so far
-  (`PlaylistPersistence`, `IconManager`); see MainWindow extraction
-  candidates below for the rest.
+  (`PlaylistPersistence`, `IconManager`, `AlbumArtPanel`); see MainWindow
+  extraction candidates below for the rest.
 - `ui/playlist_persistence.py` — JSON load/save/save-as for the playlist
   track list, extracted from `MainWindow`. Pure Python, no Qt/VLC
   dependency; tested in `tests/test_playlist_persistence.py`.
@@ -52,6 +52,16 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   (`toggle_icon_colors`) and `ICON_MAP`'s static structure are unit-tested
   (`tests/test_icon_manager.py`) — the Qt-touching methods need a live
   `QApplication`, which this project doesn't bootstrap in tests.
+- `ui/album_art_panel.py` — `AlbumArtPanel(QLabel)`: album art display,
+  themed "no art" placeholder, and the save/viewer dialog, extracted from
+  `MainWindow`. Self-contained widget (built and added to the layout by
+  `MainWindow`, not a manager operating on an externally-owned label like
+  `IconManager`) — its own `_pixmap`/`_art_bytes` state, `has_art` property
+  read by `MainWindow._apply_config` instead of the old direct attribute
+  poke. Entirely Qt-bound (`QPixmap`, a modal `QDialog.exec()`,
+  `QFileDialog`); no pure-Python logic worth isolating the way
+  `toggle_icon_colors` was for `IconManager`, so it ships with zero unit
+  tests — same `QApplication` gap as `icon_manager.py`.
 - `ui/playlist.py`, `ui/visualizations.py`, `ui/dialogs.py`, `ui/widgets.py`,
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
@@ -68,7 +78,7 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 `MainWindow.__init__`/`_build_ui` currently mix VLC wiring, UI construction,
 and playback logic in ~340 lines with no separation, making the wiring hard
 to test in isolation. Concrete split points identified by audit. Progress:
-2 of 7 done, 5 remaining.
+3 of 7 done, 4 remaining.
 
 Done:
 - `PlaylistPersistence` (`ui/playlist_persistence.py`) — load/save/save-as
@@ -81,6 +91,14 @@ Done:
   splitter-handle colors via `derive_color`, visualization `set_colors`,
   playlist accent color) is untouched; a separate future "ThemeManager"
   extraction would cover that if ever done.
+- `AlbumArtPanel` (`ui/album_art_panel.py`) — `_update_album_art`,
+  `_open_art_viewer`, `_show_no_art`, plus the `_full_art_pixmap`/
+  `_full_art_bytes` state they mutated. Extracted as a self-contained
+  `QLabel` subclass MainWindow instantiates and adds to its layout
+  (`self._album_art = AlbumArtPanel()`), not a manager bolted onto an
+  externally-built label. No unit tests — no pure-Python logic in it worth
+  isolating, unlike `IconManager`'s `toggle_icon_colors`; see the
+  Architecture map entry above for detail.
 
 Remaining (next step, in no particular order):
 - `PlaybackController` — VLC player/list_player, current track/item, shuffle,
@@ -88,7 +106,6 @@ Remaining (next step, in no particular order):
 - `PlaylistIngestionManager` — `_MetadataWorker` + `_add_file(s)`/
   `_add_folder` + `_append_to_media_list`.
 - `FileBrowserPanel` — file tree, root combo, mount-point enumeration.
-- `AlbumArtPanel` — update/viewer/no-art handling.
 - `SettingsController` — `_config`, `_apply_config`, `_apply_shortcuts`,
   settings/EQ dialogs.
 
