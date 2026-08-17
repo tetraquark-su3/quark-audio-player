@@ -13,12 +13,12 @@ import random
 import threading
 import numpy as np
 import vlc
-from PyQt6.QtCore    import QDir, QModelIndex, Qt, QTimer, QThread, pyqtSlot, pyqtSignal
-from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter, QFileSystemModel, QPen
+from PyQt6.QtCore    import Qt, QTimer, QThread, pyqtSlot, pyqtSignal
+from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout,
+    QApplication, QDialog, QFileDialog, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QSplitter, QSplitterHandle, QTabWidget,
-    QTextEdit, QTreeView, QVBoxLayout, QWidget, QPushButton, 
+    QTextEdit, QVBoxLayout, QWidget, QPushButton,
     QLineEdit
 )
 from audio.engine     import (
@@ -30,6 +30,7 @@ from config.settings  import (
 )
 from ui.album_art_panel import AlbumArtPanel
 from ui.dialogs       import EqualizerDialog, SettingsDialog
+from ui.file_browser_panel import FileBrowserPanel
 from ui.icon_manager  import IconManager
 from ui.playlist      import PlaylistWidget
 from ui.playlist_persistence import PlaylistPersistence, PlaylistPersistenceError
@@ -327,57 +328,10 @@ class MainWindow(QMainWindow):
         self._viz_tabs.addTab(self._vumeter,     "VU Meter")
 
         # ── Left panel: file browser ────────────────────────────────
-        left_panel = QWidget()
-        left_panel.setObjectName("leftPanel")
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(0)
-
-        lbl_explorer = QLabel("  File Browser")
-        lbl_explorer.setObjectName("sectionLabel")
-        left_layout.addWidget(lbl_explorer)
-
-        self._root_combo = QComboBox()
-        self._root_combo.addItem("Home", QDir.homePath())
-
-        drive_icon = self.style().standardIcon(
-            self.style().StandardPixmap.SP_DriveHDIcon
-        )
-
-        if sys.platform == "win32":
-            # Énumère toutes les lettres de lecteur montées (C:\, D:\, etc.)
-            import string
-            for letter in string.ascii_uppercase:
-                drive = f"{letter}:\\"
-                if os.path.exists(drive):
-                    self._root_combo.addItem(drive_icon, drive, drive)
-        else:
-            # Linux : points de montage classiques
-            user = os.environ.get("USER", "")
-            self._root_combo.addItem("Root /", "/")
-            for base in [f"/run/media/{user}", "/mnt"]:
-                if os.path.isdir(base):
-                    for entry in os.listdir(base):
-                        path = os.path.join(base, entry)
-                        if os.path.ismount(path):
-                            self._root_combo.addItem(drive_icon, entry, path)
-
-        self._root_combo.currentIndexChanged.connect(self._change_root)
-        left_layout.addWidget(self._root_combo)
-        self._fs_model = QFileSystemModel()
-        self._fs_model.setRootPath(QDir.homePath())
-        self._file_tree = QTreeView()
-        self._file_tree.setModel(self._fs_model)
-        self._file_tree.setRootIndex(self._fs_model.index(QDir.homePath()))
-        self._file_tree.setColumnWidth(0, 220)
-        for col in [1, 2, 3]:
-            self._file_tree.hideColumn(col)
-        self._file_tree.setHeaderHidden(True)
-        self._file_tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
-        self._file_tree.doubleClicked.connect(self._on_file_double_click)
-        self._file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._file_tree.customContextMenuRequested.connect(self._on_file_context_menu)
-        left_layout.addWidget(self._file_tree)
+        self._file_browser = FileBrowserPanel()
+        self._file_browser.add_file_requested.connect(self._on_browser_add_file)
+        self._file_browser.add_files_requested.connect(self._add_files)
+        self._file_browser.add_folder_requested.connect(self._add_folder)
 
         # ── Right panel: playlist + detail ──────────────────────────
         right_panel = QWidget()
@@ -431,7 +385,7 @@ class MainWindow(QMainWindow):
 
         # ── Splitters ────────────────────────────────────────────────
         h_splitter = _StyledSplitter(Qt.Orientation.Horizontal)
-        h_splitter.addWidget(left_panel)
+        h_splitter.addWidget(self._file_browser)
         h_splitter.addWidget(right_panel)
         h_splitter.setSizes([400, 700])
 
@@ -690,7 +644,7 @@ class MainWindow(QMainWindow):
             save_config(self._config)
 
     # ------------------------------------------------------------------
-    # File browser
+    # External file-open (single-instance socket, see main.py)
     # ------------------------------------------------------------------
     @pyqtSlot(str)
     def _open_from_socket(self, path: str) -> None:
@@ -703,50 +657,12 @@ class MainWindow(QMainWindow):
         else:
             self._add_file(path, play_when_ready=not self._player.is_playing())
 
-    def _change_root(self, index: int) -> None:
-        path = self._root_combo.itemData(index)
-        self._fs_model.setRootPath(path)
-        self._file_tree.setRootIndex(self._fs_model.index(path))
-
-    def _on_file_double_click(self, index: QModelIndex) -> None:
-        path = self._fs_model.filePath(index)
-        if os.path.isfile(path) and is_audio(path):
-            self._add_file(path)
-            self.statusBar().showMessage(f"Added: {os.path.basename(path)}")
-
-    def _on_file_context_menu(self, position) -> None:
-        from PyQt6.QtWidgets import QMenu
-        indexes = self._file_tree.selectedIndexes()
-        if not indexes:
-            index = self._file_tree.indexAt(position)
-            if not index.isValid():
-                return
-            indexes = [index]
-
-        # Collect unique paths (selectedIndexes may repeat per column)
-        seen = set()
-        paths = []
-        for idx in indexes:
-            p = self._fs_model.filePath(idx)
-            if p not in seen:
-                seen.add(p)
-                paths.append(p)
-
-        audio_paths = [p for p in paths if os.path.isfile(p) and is_audio(p)]
-        dir_paths   = [p for p in paths if os.path.isdir(p)]
-
-        menu = QMenu(self)
-        if audio_paths:
-            n = len(audio_paths)
-            label = f"Add {n} track{'s' if n > 1 else ''} to playlist"
-            action = menu.addAction(label)
-            action.triggered.connect(lambda: self._add_files(audio_paths))
-        if dir_paths:
-            for d in dir_paths:
-                action = menu.addAction(f'Add folder "{os.path.basename(d)}" to playlist')
-                action.triggered.connect(lambda checked=False, folder=d: self._add_folder(folder))
-        if not menu.isEmpty():
-            menu.exec(self._file_tree.viewport().mapToGlobal(position))
+    # ------------------------------------------------------------------
+    # File browser (wiring to FileBrowserPanel's signals)
+    # ------------------------------------------------------------------
+    def _on_browser_add_file(self, path: str) -> None:
+        self._add_file(path)
+        self.statusBar().showMessage(f"Added: {os.path.basename(path)}")
 
     def _add_files(self, paths: list) -> None:
         new_paths = [p for p in paths if self._playlist.item_by_path(p) is None]
@@ -1395,15 +1311,6 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     f"{removed} track(s) removed. Ctrl+Z to undo."
                 )
-            return
-
-        if event.key() == Qt.Key.Key_Return and self._file_tree.hasFocus():
-            for index in self._file_tree.selectedIndexes():
-                path = self._fs_model.filePath(index)
-                if os.path.isdir(path):
-                    self._add_folder(path)
-                elif is_audio(path):
-                    self._add_file(path)
             return
 
         undo_seq = QKeySequence(rc.get("undo", "Ctrl+Z"))

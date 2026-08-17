@@ -17,10 +17,10 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   `requirements-dev.txt` — includes PyQt6, since `ui/icon_manager.py` needs
   it at import time even for its Qt-free tests). Run with `pytest` from the
   repo root; test files live in `tests/`. Coverage is still partial — only
-  `ui/playlist_persistence.py` and the pure/static slice of
-  `ui/icon_manager.py` are tested. Most of `MainWindow` and the rest of the
-  app have no automated tests yet — don't assume broader coverage exists
-  when asked to "verify" something.
+  `ui/playlist_persistence.py`, the pure/static slice of `ui/icon_manager.py`,
+  and `ui/file_browser_panel.py::list_mount_roots` are tested. Most of
+  `MainWindow` and the rest of the app have no automated tests yet — don't
+  assume broader coverage exists when asked to "verify" something.
 
 ## Architecture map
 - `main.py` — entry point; single-instance lock (`fcntl`) + localhost socket
@@ -35,13 +35,13 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   compensate VLC's reported decoder position with `audio_get_delay()` so
   visuals match what's actually audible) — **dead code**, no callers found
   anywhere in the project; see Dead code below.
-- `ui/main_window.py` — `MainWindow`, ~1450 lines. Wires VLC (`MediaPlayer` +
+- `ui/main_window.py` — `MainWindow`, ~1360 lines. Wires VLC (`MediaPlayer` +
   `MediaListPlayer`) to the playlist, visualisations, file browser, settings,
   EQ, and shortcuts. One large class doing both UI construction and playback
-  logic — a natural split candidate, not a "just rewrite it" candidate. Three
+  logic — a natural split candidate, not a "just rewrite it" candidate. Four
   of the seven split points below have been extracted so far
-  (`PlaylistPersistence`, `IconManager`, `AlbumArtPanel`); see MainWindow
-  extraction candidates below for the rest.
+  (`PlaylistPersistence`, `IconManager`, `AlbumArtPanel`, `FileBrowserPanel`);
+  see MainWindow extraction candidates below for the rest.
 - `ui/playlist_persistence.py` — JSON load/save/save-as for the playlist
   track list, extracted from `MainWindow`. Pure Python, no Qt/VLC
   dependency; tested in `tests/test_playlist_persistence.py`.
@@ -62,6 +62,33 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   `QFileDialog`); no pure-Python logic worth isolating the way
   `toggle_icon_colors` was for `IconManager`, so it ships with zero unit
   tests — same `QApplication` gap as `icon_manager.py`.
+- `ui/file_browser_panel.py` — `FileBrowserPanel(QWidget)`: root selector
+  (Home / Windows drives / Linux mount points) + `QFileSystemModel`-backed
+  `QTreeView`, extracted from `MainWindow`. Self-contained widget added
+  directly to `h_splitter`, same shape as `AlbumArtPanel`. Talks to
+  `MainWindow` via signals (`add_file_requested`, `add_files_requested`,
+  `add_folder_requested`), not constructor-injected callbacks — deliberate:
+  those signals are today connected to `MainWindow._add_file(s)`/
+  `_add_folder`, which are themselves the documented scope of the
+  not-yet-done `PlaylistIngestionManager` extraction below; re-pointing a
+  signal connection when that lands is a one-line change in `MainWindow`,
+  vs. re-threading a callback reference through the panel. `Key_Return`
+  handling (add selected files/folders) moved from
+  `MainWindow.keyPressEvent`'s `self._file_tree.hasFocus()` check into the
+  panel's own `keyPressEvent` override (`self._tree.hasFocus()`, identical
+  condition) — `MainWindow` no longer needs to know the tree exists.
+  `list_mount_roots()` (Windows drive letters / Linux mount points under
+  `/run/media/$USER` and `/mnt`) was pulled out of the `QComboBox`-population
+  loop into a Qt-free function and is unit-tested
+  (`tests/test_file_browser_panel.py`) — the one piece of real logic here
+  that isn't Qt-bound. Everything else (tree/model wiring, context menu,
+  keyPressEvent) needs a live `QApplication`, same gap as `icon_manager.py`/
+  `album_art_panel.py`. One small intentional behavior change: the
+  immediate "Added: <filename>" status message (previously shown only on
+  double-click) now also fires for a single-file `Key_Return` add, via the
+  `add_file_requested` → `MainWindow._on_browser_add_file` wrapper — folded
+  the two call sites together rather than adding a fourth signal just to
+  keep that message double-click-only.
 - `ui/playlist.py`, `ui/visualizations.py`, `ui/dialogs.py`, `ui/widgets.py`,
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
@@ -78,7 +105,7 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 `MainWindow.__init__`/`_build_ui` currently mix VLC wiring, UI construction,
 and playback logic in ~340 lines with no separation, making the wiring hard
 to test in isolation. Concrete split points identified by audit. Progress:
-3 of 7 done, 4 remaining.
+4 of 7 done, 3 remaining.
 
 Done:
 - `PlaylistPersistence` (`ui/playlist_persistence.py`) — load/save/save-as
@@ -99,13 +126,21 @@ Done:
   externally-built label. No unit tests — no pure-Python logic in it worth
   isolating, unlike `IconManager`'s `toggle_icon_colors`; see the
   Architecture map entry above for detail.
+- `FileBrowserPanel` (`ui/file_browser_panel.py`) — `_change_root`,
+  `_on_file_double_click`, `_on_file_context_menu`, the mount-point
+  enumeration, and the `Key_Return` branch formerly in
+  `MainWindow.keyPressEvent`. Extracted as a self-contained `QWidget`
+  added directly to `h_splitter`. Talks back to `MainWindow` via signals,
+  not callbacks — see the Architecture map entry above for the full
+  rationale (chosen so re-pointing to `PlaylistIngestionManager` later is a
+  one-line reconnect). `list_mount_roots()` is genuinely unit-tested
+  (Qt-free); the rest ships without tests like `IconManager`/`AlbumArtPanel`.
 
 Remaining (next step, in no particular order):
 - `PlaybackController` — VLC player/list_player, current track/item, shuffle,
   repeat, EQ apply, progress/end timers.
 - `PlaylistIngestionManager` — `_MetadataWorker` + `_add_file(s)`/
   `_add_folder` + `_append_to_media_list`.
-- `FileBrowserPanel` — file tree, root combo, mount-point enumeration.
 - `SettingsController` — `_config`, `_apply_config`, `_apply_shortcuts`,
   settings/EQ dialogs.
 
