@@ -16,7 +16,7 @@ import vlc
 from PyQt6.QtCore    import Qt, QTimer, QThread, pyqtSlot, pyqtSignal
 from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QHBoxLayout,
+    QApplication, QFileDialog, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QSplitter, QSplitterHandle, QTabWidget,
     QTextEdit, QVBoxLayout, QWidget, QPushButton,
     QLineEdit
@@ -29,11 +29,11 @@ from config.settings  import (
     is_audio, load_config, save_config,
 )
 from ui.album_art_panel import AlbumArtPanel
-from ui.dialogs       import EqualizerDialog, SettingsDialog
 from ui.file_browser_panel import FileBrowserPanel
 from ui.icon_manager  import IconManager
 from ui.playlist      import PlaylistWidget
 from ui.playlist_persistence import PlaylistPersistence, PlaylistPersistenceError
+from ui.settings_controller import SettingsController
 from ui.style         import build_stylesheet
 from ui.visualizations import (
     LissajousWidget, OscilloscopeWidget, SpectralFluxWidget,
@@ -288,6 +288,7 @@ class MainWindow(QMainWindow):
 
         self._playlist_persistence = PlaylistPersistence(PLAYLIST_PATH)
         self._icon_manager = IconManager(ASSETS_DIR)
+        self._settings = SettingsController()
 
         self._build_ui()
         self._apply_config()
@@ -636,9 +637,9 @@ class MainWindow(QMainWindow):
             self._shortcuts[key] = sc
 
     def _open_settings(self) -> None:
-        dlg = SettingsDialog(self._config, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._config = dlg.config
+        new_config = self._settings.open_settings_dialog(self._config, self)
+        if new_config is not None:
+            self._config = new_config
             self._apply_config()
             self._apply_shortcuts()
             save_config(self._config)
@@ -1269,10 +1270,9 @@ class MainWindow(QMainWindow):
 
     def _open_equalizer(self) -> None:
         eq_state = self._config.get("eq_state", {})
-        dlg = EqualizerDialog(self._player, eq_state, self)
-        dlg.exec()
         # Always save state (even on Close), so it survives re-open and app restart
-        self._config["eq_state"] = dlg.eq_state
+        self._config["eq_state"] = self._settings.open_equalizer_dialog(
+            self._player, eq_state, self)
         save_config(self._config)
 
     # ------------------------------------------------------------------

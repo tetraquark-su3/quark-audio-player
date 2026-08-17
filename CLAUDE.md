@@ -38,10 +38,11 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 - `ui/main_window.py` — `MainWindow`, ~1360 lines. Wires VLC (`MediaPlayer` +
   `MediaListPlayer`) to the playlist, visualisations, file browser, settings,
   EQ, and shortcuts. One large class doing both UI construction and playback
-  logic — a natural split candidate, not a "just rewrite it" candidate. Four
+  logic — a natural split candidate, not a "just rewrite it" candidate. Five
   of the seven split points below have been extracted so far
-  (`PlaylistPersistence`, `IconManager`, `AlbumArtPanel`, `FileBrowserPanel`);
-  see MainWindow extraction candidates below for the rest.
+  (`PlaylistPersistence`, `IconManager`, `AlbumArtPanel`, `FileBrowserPanel`,
+  `SettingsController`); see MainWindow extraction candidates below for the
+  rest.
 - `ui/playlist_persistence.py` — JSON load/save/save-as for the playlist
   track list, extracted from `MainWindow`. Pure Python, no Qt/VLC
   dependency; tested in `tests/test_playlist_persistence.py`.
@@ -89,6 +90,31 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   `add_file_requested` → `MainWindow._on_browser_add_file` wrapper — folded
   the two call sites together rather than adding a fourth signal just to
   keep that message double-click-only.
+- `ui/settings_controller.py` — `SettingsController`: thin wrapper around
+  `SettingsDialog`/`EqualizerDialog` (`ui/dialogs.py`), extracted from
+  `MainWindow._open_settings`/`_open_equalizer`. Deliberately narrow: two
+  methods (`open_settings_dialog`, `open_equalizer_dialog`), no constructor
+  state — config/eq_state/player/parent are passed in fresh each call, kept
+  as a class only for naming consistency with `IconManager`/
+  `FileBrowserPanel`. `self._config` stays owned by `MainWindow`, which
+  also keeps `_apply_config`/`_apply_shortcuts` (both orchestrate objects
+  `MainWindow` already owns — viz widgets, splitters, playlist, IconManager,
+  its own `QShortcut`s — the same reasoning `IconManager`'s scope note
+  already applies to the broader theming). This narrows the extraction from
+  what the one-line candidate description below used to imply (it listed
+  `_config`/`_apply_config`/`_apply_shortcuts` as in scope) — noted
+  explicitly rather than silently dropped. No `config_changed` signal
+  either, unlike `FileBrowserPanel`'s signal choice: both dialogs are opened
+  through a synchronous, blocking `QDialog.exec()` call made directly by
+  `MainWindow` on its own button click, with exactly one known caller, so a
+  plain return value is the better fit — signals earn their keep when a
+  widget detects a user action itself and doesn't know who consumes it,
+  which isn't the case here. `_apply_eq()` (re-attaching the saved EQ to
+  the VLC player on track change) stays in `MainWindow` too — it's
+  `PlaybackController`'s documented scope ("EQ apply"), not this one's.
+  Zero unit tests, same reasoning as `IconManager`/`AlbumArtPanel`: both
+  methods just build a `QDialog`, call `.exec()`, and read back a property
+  — no pure logic to isolate.
 - `ui/playlist.py`, `ui/visualizations.py`, `ui/dialogs.py`, `ui/widgets.py`,
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
@@ -105,7 +131,7 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 `MainWindow.__init__`/`_build_ui` currently mix VLC wiring, UI construction,
 and playback logic in ~340 lines with no separation, making the wiring hard
 to test in isolation. Concrete split points identified by audit. Progress:
-4 of 7 done, 3 remaining.
+5 of 7 done, 2 remaining.
 
 Done:
 - `PlaylistPersistence` (`ui/playlist_persistence.py`) — load/save/save-as
@@ -135,14 +161,20 @@ Done:
   rationale (chosen so re-pointing to `PlaylistIngestionManager` later is a
   one-line reconnect). `list_mount_roots()` is genuinely unit-tested
   (Qt-free); the rest ships without tests like `IconManager`/`AlbumArtPanel`.
+- `SettingsController` (`ui/settings_controller.py`) — narrower than the
+  one-liner below implied: only `_open_settings`/`_open_equalizer`'s
+  dialog-opening plumbing moved. `_config`, `_apply_config`, and
+  `_apply_shortcuts` were deliberately left in `MainWindow` — see the
+  Architecture map entry above for the full rationale (both orchestrate
+  objects `MainWindow` already owns; no `config_changed` signal either,
+  since both call sites are synchronous with one known caller). No unit
+  tests — no pure logic to isolate, same as `IconManager`/`AlbumArtPanel`.
 
 Remaining (next step, in no particular order):
 - `PlaybackController` — VLC player/list_player, current track/item, shuffle,
   repeat, EQ apply, progress/end timers.
 - `PlaylistIngestionManager` — `_MetadataWorker` + `_add_file(s)`/
   `_add_folder` + `_append_to_media_list`.
-- `SettingsController` — `_config`, `_apply_config`, `_apply_shortcuts`,
-  settings/EQ dialogs.
 
 ## Conventions
 - Python 3.10+ type hints throughout; short docstrings on public functions.
