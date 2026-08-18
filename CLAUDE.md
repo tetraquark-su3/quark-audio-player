@@ -35,14 +35,14 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   compensate VLC's reported decoder position with `audio_get_delay()` so
   visuals match what's actually audible) — **dead code**, no callers found
   anywhere in the project; see Dead code below.
-- `ui/main_window.py` — `MainWindow`, ~1360 lines. Wires VLC (`MediaPlayer` +
-  `MediaListPlayer`) to the playlist, visualisations, file browser, settings,
-  EQ, and shortcuts. One large class doing both UI construction and playback
-  logic — a natural split candidate, not a "just rewrite it" candidate. Five
-  of the seven split points below have been extracted so far
+- `ui/main_window.py` — `MainWindow`, ~1000 lines. Wires VLC playback (now
+  via `PlaybackController`) to the playlist, visualisations, file browser,
+  settings, EQ, and shortcuts. One large class doing both UI construction
+  and playback logic — a natural split candidate, not a "just rewrite it"
+  candidate. Six of the seven split points below have been extracted so far
   (`PlaylistPersistence`, `IconManager`, `AlbumArtPanel`, `FileBrowserPanel`,
-  `SettingsController`); see MainWindow extraction candidates below for the
-  rest.
+  `SettingsController`, `PlaybackController`); see MainWindow extraction
+  candidates below for the rest.
 - `ui/playlist_persistence.py` — JSON load/save/save-as for the playlist
   track list, extracted from `MainWindow`. Pure Python, no Qt/VLC
   dependency; tested in `tests/test_playlist_persistence.py`.
@@ -110,11 +110,20 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   plain return value is the better fit — signals earn their keep when a
   widget detects a user action itself and doesn't know who consumes it,
   which isn't the case here. `_apply_eq()` (re-attaching the saved EQ to
-  the VLC player on track change) stays in `MainWindow` too — it's
-  `PlaybackController`'s documented scope ("EQ apply"), not this one's.
+  the VLC player on track change) isn't here either — it moved into
+  `PlaybackController` (see below) once that extraction landed, not into
+  this one.
   Zero unit tests, same reasoning as `IconManager`/`AlbumArtPanel`: both
   methods just build a `QDialog`, call `.exec()`, and read back a property
   — no pure logic to isolate.
+- `ui/playback_controller.py` — `PlaybackController`, ~640 lines. Owns the
+  VLC `Instance`/`MediaPlayer`/`MediaListPlayer`/`MediaList` + its lock,
+  current track/item, shuffle/repeat/`_shuffle_order`, the progress/
+  end-of-playlist-grace timers, `_rebuild_media_list`, `_apply_eq`, the
+  `MediaListPlayerNextItemSet`/`MediaPlayerEncounteredError` VLC event
+  handlers, and play/pause/stop/next/prev/shuffle/repeat/seek — extracted
+  from `MainWindow`. Full rationale and scope notes under "MainWindow
+  extraction candidates" below.
 - `ui/playlist.py`, `ui/visualizations.py`, `ui/dialogs.py`, `ui/widgets.py`,
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
@@ -131,7 +140,7 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 `MainWindow.__init__`/`_build_ui` currently mix VLC wiring, UI construction,
 and playback logic in ~340 lines with no separation, making the wiring hard
 to test in isolation. Concrete split points identified by audit. Progress:
-5 of 7 done, 2 remaining.
+6 of 7 done, 1 remaining.
 
 Done:
 - `PlaylistPersistence` (`ui/playlist_persistence.py`) — load/save/save-as
@@ -169,12 +178,88 @@ Done:
   objects `MainWindow` already owns; no `config_changed` signal either,
   since both call sites are synchronous with one known caller). No unit
   tests — no pure logic to isolate, same as `IconManager`/`AlbumArtPanel`.
+- `PlaybackController` (`ui/playback_controller.py`) — VLC
+  `Instance`/`MediaPlayer`/`MediaListPlayer`/`MediaList` + its lock,
+  current track/item, shuffle/repeat/`_shuffle_order`, the progress/
+  end-of-playlist-grace timers, `_rebuild_media_list`, `_apply_eq`, and
+  play/pause/stop/next/prev/shuffle/repeat/seek. Broader than the one-line
+  candidate this replaced implied, in one respect: it also picked up
+  `_on_vlc_error` (the `MediaPlayerEncounteredError` event handler),
+  surfaced during the extraction audit as the same kind of VLC-event
+  wiring as the next-item handler even though the original candidate
+  line didn't name it — same "scope deviated from the one-liner" pattern
+  already noted for `SettingsController` above.
 
-Remaining (next step, in no particular order):
-- `PlaybackController` — VLC player/list_player, current track/item, shuffle,
-  repeat, EQ apply, progress/end timers.
+  Two-phase construction (`__init__` / `bind()`), unlike every other
+  extracted class here (which take everything they need in one
+  constructor call): `MainWindow.__init__` constructs `PlaybackController`
+  early — at roughly the same point the raw VLC setup used to live —
+  because `MainWindow._build_ui()`'s initial `audio_set_volume(80)` call
+  needs `self._playback.player` to already exist. But the playlist widget,
+  progress slider, and time label it also needs aren't built until
+  `_build_ui()` creates them. So `__init__` takes only `eq_state_provider`
+  and the UI-update callables (`set_play_icon`, `update_ui_for_track`,
+  `reset_visualizations`, `status_message`, `timer_fft_start/stop`,
+  `loader_load` — all bound `MainWindow` methods or lambdas, safe to hand
+  over before their underlying widgets exist since none of them run until
+  real playback happens), and `bind(playlist, progress_slider, time_label)`
+  is called exactly once, as the very last statement in `_build_ui()`.
+  Nothing between construction and that `bind()` call can reach a playback
+  method — no auto-play on construction, and a command-line/socket file
+  open can only reach `MainWindow` after `__init__` has fully returned —
+  so no runtime guard was added for calling a playback method pre-`bind()`;
+  see the module docstring's "Two-phase construction" section for the full
+  argument.
+
+  `_timer_fft`/`_update_fft` deliberately did **not** move here alongside
+  `_timer_progress`/`_timer_end_grace`, even though all three are started/
+  stopped at the same call sites: `_update_fft` only pushes decoded PCM
+  samples to the six visualisation widgets and reads `SampleLoader`, both
+  MainWindow-owned, with no VLC-state logic of its own — same "orchestrates
+  objects MainWindow already owns" reasoning `_apply_config`/
+  `_apply_shortcuts` got under `SettingsController` above.
+  `PlaybackController` reaches it only through injected
+  `timer_fft_start`/`timer_fft_stop` callables, invoked at the exact points
+  `self._timer_fft.start()`/`.stop()` used to be called inline.
+
+  Public interface deliberately kept narrow, designed with
+  `PlaylistIngestionManager` (extraction 7/7, the one remaining) in mind:
+  `current_track` (read-only property) and `append_to_active_list(path)`
+  (public rename of the former `_append_to_media_list`) are the only two
+  things that extraction will need. `_media_list_lock`/`_media_list` stay
+  private and are never exposed as attributes — `append_to_active_list`
+  fully encapsulates the lock+add+retry+shuffle-fallback protocol
+  internally. When `PlaylistIngestionManager` is extracted,
+  `MainWindow._on_track_ready`'s `self._playback.append_to_active_list(path)`
+  call (guarded by `self._playback.current_track is not None`) becomes that
+  extraction's to make instead — a one-line reconnect, not a new interface
+  to design.
+
+  `_rebuild_media_list`, `append_to_active_list`, and `_on_media_appended`
+  — the race-condition protocol documented in Gotchas below (the
+  `_media_list_lock` one) — were moved **verbatim**, docstrings and inline
+  comments included, not rewritten, restructured, or "improved" beyond the
+  mechanical rename of `_append_to_media_list` to the public
+  `append_to_active_list`.
+
+  No unit tests — same `QApplication`/live-VLC-instance gap as
+  `IconManager`/`AlbumArtPanel`/`FileBrowserPanel`/`SettingsController`.
+  Verified instead by scripting a real run of the app (`QTest.mouseClick`
+  against the live widgets under a real `DISPLAY`, real audio files),
+  exercising play/pause/stop, next/prev, shuffle/repeat, progress
+  advancing, seek-by-click, volume + mute/unmute (the fix in Gotchas
+  below), the equalizer dialog, and a live drag-and-drop-equivalent append
+  during playback — no regressions found.
+
+Remaining (last one, 7/7):
 - `PlaylistIngestionManager` — `_MetadataWorker` + `_add_file(s)`/
-  `_add_folder` + `_append_to_media_list`.
+  `_add_folder`. Its live-append call already has a home to move into:
+  `PlaybackController.append_to_active_list(path)` (public, designed for
+  exactly this — see the `PlaybackController` entry above) replaces the
+  old private `_append_to_media_list`, and `MainWindow._on_track_ready`'s
+  guard becomes a read of `PlaybackController.current_track` instead of a
+  raw attribute. No new interface design needed for this extraction on the
+  playback side — just reconnecting existing calls to their new owner.
 
 ## Conventions
 - Python 3.10+ type hints throughout; short docstrings on public functions.
@@ -191,20 +276,23 @@ Remaining (next step, in no particular order):
 - `PlaylistWidget`'s custom `SortableHeader` and `_sort_col`/`_sort_order`
   work around a Qt6 regression in `setSortingEnabled` — don't "simplify" this
   back to the standard Qt sorting API.
-- `MainWindow._media_list_lock` guards only the read/swap of the
-  `self._media_list` *reference* in `_append_to_media_list()` /
+- `PlaybackController._media_list_lock` (moved from `MainWindow` — see
+  the `PlaybackController` entry above) guards only the read/swap of the
+  `self._media_list` *reference* in `append_to_active_list()` /
   `_rebuild_media_list()` — never the blocking VLC-level
   `media_list.lock()/add_media()/unlock()` call. Don't widen it to cover
   that VLC call "for extra safety": VLC's own lock can block for a while
   during playback, and `_rebuild_media_list()` runs on the Qt thread, so
   holding `_media_list_lock` around the VLC call would let a slow VLC lock
   freeze the UI — exactly what the background-thread design in
-  `_append_to_media_list()` exists to avoid. The residual race (a rebuild
+  `append_to_active_list()` exists to avoid. The residual race (a rebuild
   landing between the read and the VLC add completing) is handled instead
   by `_on_media_appended()` detecting the mismatch and retrying.
 - `MainWindow._toggle_mute` captures the pre-mute volume from
-  `self._volume.value()` (the Qt slider), not `self._player.audio_get_volume()`
-  (VLC). VLC's `audio_get_volume()` can return `-1` when no audio output is
+  `self._volume.value()` (the Qt slider), not
+  `self._playback.player.audio_get_volume()` (VLC — reached through
+  `PlaybackController`'s public `player` property since the extraction).
+  VLC's `audio_get_volume()` can return `-1` when no audio output is
   active yet (e.g. no media loaded/played), and even when it doesn't, its
   value isn't guaranteed to exactly match what was last set. The slider is
   the actual source of truth for "what volume the user wants" — VLC is just

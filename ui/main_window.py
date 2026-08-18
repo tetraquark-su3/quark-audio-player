@@ -9,10 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import re
-import random
-import threading
 import numpy as np
-import vlc
 from PyQt6.QtCore    import Qt, QTimer, QThread, pyqtSlot, pyqtSignal
 from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
@@ -31,6 +28,7 @@ from config.settings  import (
 from ui.album_art_panel import AlbumArtPanel
 from ui.file_browser_panel import FileBrowserPanel
 from ui.icon_manager  import IconManager
+from ui.playback_controller import PlaybackController
 from ui.playlist      import PlaylistWidget
 from ui.playlist_persistence import PlaylistPersistence, PlaylistPersistenceError
 from ui.settings_controller import SettingsController
@@ -212,8 +210,6 @@ class _MetadataWorker(QThread):
 class MainWindow(QMainWindow):
     """Quark Audio Player — main application window."""
     _socket_file_received  = pyqtSignal(str)
-    _vlc_next_item_signal  = pyqtSignal()   # fired from VLC thread → Qt slot
-    _media_appended_signal = pyqtSignal(str, object)  # path, target_list — fired from append thread → Qt slot
 
     # ------------------------------------------------------------------
     # Construction
@@ -221,7 +217,6 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self._vlc = vlc.Instance("--reset-plugins-cache")
         self.setWindowTitle("Quark Audio Player v0.6.6")
         app_icon_path = os.path.join(ASSETS_DIR, "icon_app.png")
         if os.path.exists(app_icon_path):
@@ -231,33 +226,29 @@ class MainWindow(QMainWindow):
 
         self._config        = load_config()
         self.setAcceptDrops(True)
-        self._current_track = None           # int | None
-        self._current_item  = None           # QTreeWidgetItem | None
-        self._shuffle       = False
-        self._repeat        = False
-        self._shuffle_order: list[int] = []   # fixed random order, generated once
         self._shortcuts: dict[str, QShortcut] = {}
 
-        # VLC — MediaPlayer handles EQ/volume; MediaListPlayer handles transitions
-        self._player      = self._vlc.media_player_new()
-        self._player.event_manager().event_attach(
-            vlc.EventType.MediaPlayerEncounteredError, self._on_vlc_error
+        # VLC playback (player/list_player/media_list, current track,
+        # shuffle/repeat, progress/end-grace timers) — see
+        # ui/playback_controller.py. Constructed here (not after _build_ui())
+        # because _build_ui() needs self._playback.player for the initial
+        # volume-set call; the playlist/progress-slider/time-label widgets
+        # it also needs don't exist yet at this point, so those are wired
+        # in later via bind() — see PlaybackController's module docstring
+        # ("Two-phase construction") for why. timer_fft_start/stop and
+        # loader_load are lambdas for the same reason: self._timer_fft and
+        # self._loader are also created after this point in __init__.
+        self._playback = PlaybackController(
+            eq_state_provider     = lambda: self._config.get("eq_state", {}),
+            set_play_icon         = self._set_play_icon,
+            update_ui_for_track   = self._update_ui_for_track,
+            reset_visualizations  = self._reset_visualizations,
+            status_message        = lambda msg: self.statusBar().showMessage(msg),
+            timer_fft_start       = lambda: self._timer_fft.start(),
+            timer_fft_stop        = lambda: self._timer_fft.stop(),
+            loader_load           = lambda path: self._loader.load(path),
+            parent                = self,
         )
-        self._list_player = self._vlc.media_list_player_new()
-        self._list_player.set_media_player(self._player)
-        self._list_player.set_playback_mode(vlc.PlaybackMode.default)
-        self._list_player.event_manager().event_attach(
-            vlc.EventType.MediaListPlayerNextItemSet,
-            lambda _e: self._vlc_next_item_signal.emit(),
-        )
-        self._media_list  = self._vlc.media_list_new()
-        self._list_player.set_media_list(self._media_list)
-        # Guards only the read/swap of self._media_list itself — never the
-        # blocking VLC-level media_list.lock()/add_media()/unlock() sequence,
-        # which must stay outside it so a slow VLC lock during playback can
-        # never make _rebuild_media_list() block the Qt thread. See
-        # _append_to_media_list()/_on_media_appended() for the full protocol.
-        self._media_list_lock = threading.Lock()
 
         # Background audio sample loader
         self._loader = SampleLoader()
@@ -268,23 +259,11 @@ class MainWindow(QMainWindow):
         self._meta_worker.track_ready.connect(self._on_track_ready)
         self._pending_play: str | None = None   # path to auto-play once added
 
-        # Timers
-        self._timer_progress = QTimer()
-        self._timer_progress.setInterval(500)
-        self._timer_progress.timeout.connect(self._update_progress)
-
+        # FFT/visualisation timer — stays here rather than moving into
+        # PlaybackController; see its module docstring for why.
         self._timer_fft = QTimer()
         self._timer_fft.setInterval(1_000 // self._config["fps"])
         self._timer_fft.timeout.connect(self._update_fft)
-
-        # Short grace period before declaring end-of-playlist: if a track is
-        # appended within this window, _on_media_appended cancels the timer
-        # and the visualisations never freeze.
-        self._timer_end_grace = QTimer()
-        self._timer_end_grace.setSingleShot(True)
-        self._timer_end_grace.setInterval(200)
-        self._timer_end_grace.timeout.connect(self._on_end_grace_timeout)
-
 
         self._playlist_persistence = PlaylistPersistence(PLAYLIST_PATH)
         self._icon_manager = IconManager(ASSETS_DIR)
@@ -296,8 +275,6 @@ class MainWindow(QMainWindow):
         self._load_playlist()
 
         self._socket_file_received.connect(self._open_from_socket)
-        self._vlc_next_item_signal.connect(self._on_vlc_next_item)
-        self._media_appended_signal.connect(self._on_media_appended)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -363,10 +340,12 @@ class MainWindow(QMainWindow):
         # Playlist
         self._playlist = PlaylistWidget()
         self._playlist.doubleClicked.connect(
-            lambda idx: self._play_item(self._playlist.topLevelItem(idx.row()))
+            lambda idx: self._playback.play_item(self._playlist.topLevelItem(idx.row()))
         )
         self._playlist.itemSelectionChanged.connect(self._on_selection_changed)
-        self._playlist.order_changed.connect(self._resync_current_track)
+        # order_changed → _resync_current_track wiring now done inside
+        # PlaybackController.bind() (see call at the end of this method),
+        # since _resync_current_track lives there now.
 
         # Tabs: playlist + metadata detail
         content_tabs = QTabWidget()
@@ -428,7 +407,7 @@ class MainWindow(QMainWindow):
         self._progress = ClickableSlider(Qt.Orientation.Horizontal)
         self._progress.setObjectName("progressBar")
         self._progress.setRange(0, 1_000)
-        self._progress.sliderMoved.connect(self._seek)
+        self._progress.sliderMoved.connect(self._playback.seek)
         self._progress.setFixedHeight(24)
         self._time_label = QLabel("0:00 / 0:00")
         self._time_label.setObjectName("timeLabel")
@@ -461,10 +440,10 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         self._btn_settings = self._ctrl_btn("Settings", self._open_settings)
-        self._btn_prev     = self._ctrl_btn("|<",       self._prev_track)
-        self._btn_play     = self._ctrl_btn(">",        self._toggle_play)
-        self._btn_stop     = self._ctrl_btn("[]",       self._stop)
-        self._btn_next     = self._ctrl_btn(">|",       self._next_track)
+        self._btn_prev     = self._ctrl_btn("|<",       self._playback.prev_track)
+        self._btn_play     = self._ctrl_btn(">",        self._playback.toggle_play)
+        self._btn_stop     = self._ctrl_btn("[]",       self._playback.stop)
+        self._btn_next     = self._ctrl_btn(">|",       self._playback.next_track)
         for btn in [self._btn_settings, self._btn_prev, self._btn_play,
                     self._btn_stop, self._btn_next]:
             btn_row.addWidget(btn)
@@ -484,7 +463,7 @@ class MainWindow(QMainWindow):
         self._volume_label.setFixedSize(36, 36)
         self._volume_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._volume.valueChanged.connect(self._on_volume_changed)
-        self._player.audio_set_volume(80)
+        self._playback.player.audio_set_volume(80)
 
         self._btn_mute = self._ctrl_btn("Volume", self._toggle_mute, checkable=True)
         btn_row.addWidget(self._btn_mute)
@@ -528,16 +507,25 @@ class MainWindow(QMainWindow):
             self._config["accent_color"],
         )
 
+        # Wire the playlist/progress-bar/time-label widgets into
+        # PlaybackController now that they exist — see its module docstring
+        # ("Two-phase construction") and __init__'s comment above the
+        # PlaybackController(...) call for why this can't happen earlier.
+        # Must stay the last statement in _build_ui(): bind() assumes every
+        # widget it might ever need (and everything else built above) is
+        # already in place.
+        self._playback.bind(self._playlist, self._progress, self._time_label)
+
     def _refresh_icons(self) -> None:
         """Retint all button icons to match the current background."""
         self._icon_manager.refresh_all(
             style   = self._config.get("icon_style", "neon"),
             primary = self._config["primary_color"],
             accent  = self._config["accent_color"],
-            playing = self._player.is_playing(),
+            playing = self._playback.player.is_playing(),
             muted   = self._btn_mute.isChecked(),
-            shuffle_active = self._shuffle,
-            repeat_active  = self._repeat,
+            shuffle_active = self._playback.shuffle,
+            repeat_active  = self._playback.repeat,
         )
 
     # ------------------------------------------------------------------
@@ -625,9 +613,9 @@ class MainWindow(QMainWindow):
             sc.setEnabled(False)
         self._shortcuts.clear()
         mapping = {
-            "play_pause": self._toggle_play,
-            "next":       self._next_track,
-            "previous":   self._prev_track,
+            "play_pause": self._playback.toggle_play,
+            "next":       self._playback.next_track,
+            "previous":   self._playback.prev_track,
         }
         shortcuts = self._config.get("shortcuts", DEFAULT_CONFIG["shortcuts"])
         for key, slot in mapping.items():
@@ -653,10 +641,10 @@ class MainWindow(QMainWindow):
         self.activateWindow()
         item = self._playlist.item_by_path(path)
         if item is not None:
-            if not self._player.is_playing():
-                self._play_item(item)
+            if not self._playback.player.is_playing():
+                self._playback.play_item(item)
         else:
-            self._add_file(path, play_when_ready=not self._player.is_playing())
+            self._add_file(path, play_when_ready=not self._playback.player.is_playing())
 
     # ------------------------------------------------------------------
     # File browser (wiring to FileBrowserPanel's signals)
@@ -690,7 +678,7 @@ class MainWindow(QMainWindow):
         """
         if self._playlist.item_by_path(path) is not None:
             return  # duplicate
-        if play_when_ready and not self._player.is_playing():
+        if play_when_ready and not self._playback.player.is_playing():
             self._pending_play = path
         self._meta_worker.enqueue(path)
         
@@ -712,94 +700,13 @@ class MainWindow(QMainWindow):
             self._pending_play = None
             item = self._playlist.item_by_path(path)
             if item is not None:
-                self._play_item(item)
-        elif self._current_track is not None:
+                self._playback.play_item(item)
+        elif self._playback.current_track is not None:
             # A track was added while playback is active: append it directly
             # to the existing VLC media list instead of rebuilding from scratch.
             # Rebuilding calls set_media_list() which resets VLC's internal
             # position pointer and causes tracks to be skipped or replayed.
-            self._append_to_media_list(path)
-
-    # ------------------------------------------------------------------
-    # Append a new track to the live VLC media list
-    # ------------------------------------------------------------------
-
-    def _append_to_media_list(self, path: str) -> None:
-        """
-        Append *path* to the live VLC media list without touching the Qt thread.
-
-        libvlc_media_list_lock() is a blocking mutex — if VLC holds it during
-        playback (which it frequently does), calling it on the Qt main thread
-        causes the UI to freeze for the entire lock duration.  We therefore
-        run the lock/add/unlock sequence in a daemon thread and emit a signal
-        back to the Qt thread once done so the timers are updated safely.
-
-        self._media_list itself can be swapped by _rebuild_media_list() (on
-        the Qt thread) while this daemon thread is running — that's why the
-        list reference is re-read from self._media_list under
-        self._media_list_lock right before use, instead of being captured
-        once up front. The lock only guards that quick read (and the swap in
-        _rebuild_media_list()); it is released before the slow VLC-level
-        lock/add/unlock, so a concurrent rebuild is never blocked on it. If a
-        rebuild still lands in the (now narrow) gap between the read and the
-        VLC add completing, _on_media_appended() detects the mismatch and
-        retries — see there.
-        """
-        if self._shuffle:
-            # In shuffle mode we can't simply append — fall back to a full
-            # rebuild (safe because shuffle resets position intentionally).
-            self._rebuild_media_list(from_row=self._current_track, reshuffle=False)
-            return
-
-        item = self._playlist.item_by_path(path)
-        if item is None:
-            return
-
-        vlc_instance = self._vlc
-
-        def _do_append():
-            media = vlc_instance.media_new(path)
-            with self._media_list_lock:
-                target_list = self._media_list  # re-read now, not at call time
-            target_list.lock()
-            try:
-                target_list.add_media(media)
-            finally:
-                target_list.unlock()
-            # Signal the Qt thread with *which* list the media actually
-            # landed in, so it can tell whether a rebuild raced past it.
-            self._media_appended_signal.emit(path, target_list)
-
-        threading.Thread(target=_do_append, daemon=True).start()
-
-    @pyqtSlot(str, object)
-    def _on_media_appended(self, path: str, target_list) -> None:
-        """Called on the Qt thread after a background append completes."""
-        if target_list is not self._media_list:
-            # self._media_list was swapped (a rebuild fired) while the
-            # background add was in flight — the media was added to a list
-            # nobody plays from anymore. Retry against the current list
-            # instead of silently losing the track.
-            self._append_to_media_list(path)
-            return
-
-        item = self._playlist.item_by_path(path)
-        if item is None:
-            return  # track was removed from the playlist in the meantime
-
-        # Cancel any pending end-of-playlist grace timer — a new track just
-        # arrived so we must not freeze/reset the visualisations.
-        self._timer_end_grace.stop()
-
-        if self._player.is_playing():
-            self._timer_progress.start()
-            self._timer_fft.start()
-        else:
-            state = self._player.get_state()
-            if state in (vlc.State.Ended, vlc.State.Stopped, vlc.State.NothingSpecial):
-                # Playlist had ended — play the newly added track directly
-                # instead of _list_player.play() which restarts from index 0.
-                self._play_item(item)
+            self._playback.append_to_active_list(path)
 
     def _on_drop(self, event) -> None:
         for url in event.mimeData().urls():
@@ -901,80 +808,6 @@ class MainWindow(QMainWindow):
             accent  = self._config["accent_color"],
         )
 
-
-    def _play_item(self, item) -> None:
-        if item is None:
-            return
-        path = self._playlist.path_of(item)
-        if not os.path.exists(path):
-            self.statusBar().showMessage(f"File not found: {path}")
-            return
-        if not os.access(path, os.R_OK):
-            self.statusBar().showMessage(f"Permission denied: {os.path.basename(path)}")
-            return
-
-        row = self._playlist.indexOfTopLevelItem(item)
-        self._rebuild_media_list(from_row=row, reshuffle=True)
-        # Rebuild the MediaList starting from this track so VLC can
-        # chain automatically into the next ones.
-
-        # Play the first item in the freshly built list (= our target track)
-        self._list_player.stop()
-        self._list_player.play_item_at_index(0)
-
-        self._current_track = row
-        self._current_item  = item
-        self._playlist.clearSelection()
-        self._playlist.setCurrentItem(item)
-
-        self._update_ui_for_track(path)
-        self._apply_eq()
-
-        self._timer_progress.start()
-        self._timer_fft.start()
-        self._loader.load(path)
-
-    def _rebuild_media_list(self, from_row: int = 0, reshuffle: bool = False) -> None:
-        """
-        Rebuild self._media_list from the playlist starting at from_row.
-        In shuffle mode, uses a stable pre-generated order (_shuffle_order)
-        so each track plays exactly once.  Pass reshuffle=True to force a
-        new random order (e.g. when shuffle is toggled on, or a new track
-        is manually selected).
-        """
-        ml = self._vlc.media_list_new()
-        n  = self._playlist.topLevelItemCount()
-
-        if self._shuffle and from_row < n:
-            # Generate a new order only when explicitly requested or the
-            # stored order is stale (wrong size or doesn't contain from_row).
-            if (reshuffle
-                    or len(self._shuffle_order) != n
-                    or from_row not in self._shuffle_order):
-                rest = [r for r in range(n) if r != from_row]
-                random.shuffle(rest)
-                self._shuffle_order = [from_row] + rest
-
-            # Slice the order so it starts at from_row's position
-            start_idx = self._shuffle_order.index(from_row)
-            rows = self._shuffle_order[start_idx:]
-        else:
-            rows = list(range(from_row, n))
-
-        for r in rows:
-            it = self._playlist.item_at_row(r)
-            if it is not None:
-                ml.add_media(self._playlist.path_of(it))
-
-        # Swap the list on the player. Guarded by the same short lock
-        # _append_to_media_list()'s background thread uses to re-read
-        # self._media_list, so it never sees a half-swapped reference —
-        # see _append_to_media_list()/_on_media_appended() for the full
-        # protocol this is part of.
-        with self._media_list_lock:
-            self._media_list = ml
-            self._list_player.set_media_list(ml)
-
     def _update_ui_for_track(self, path: str) -> None:
         """Update info labels, album art, status bar and detail pane."""
         meta   = read_metadata(path)
@@ -999,111 +832,17 @@ class MainWindow(QMainWindow):
         self._detail_text.setText(build_detail_text(path))
         self.statusBar().showMessage(f"Playing: {artist} — {title}")
 
-    def _apply_eq(self) -> None:
-        """Re-attach equalizer to the current MediaPlayer (survives track changes)."""
-        eq_state = self._config.get("eq_state", {})
-        if eq_state:
-            eq = vlc.libvlc_audio_equalizer_new()
-            vlc.libvlc_audio_equalizer_set_preamp(eq, eq_state.get("preamp", 0.0))
-            for i, amp in enumerate(eq_state.get("bands", [])):
-                vlc.libvlc_audio_equalizer_set_amp_at_index(eq, amp, i)
-            vlc.libvlc_media_player_set_equalizer(self._player, eq)
-            vlc.libvlc_audio_equalizer_release(eq)
-
-    @pyqtSlot()
-    def _on_vlc_next_item(self) -> None:
-        """
-        Called (via signal) when VLC's MediaListPlayer moves to the next item.
-        Identifies the new track by asking VLC which media it is playing
-        (via get_media().get_mrl()) rather than maintaining a fragile index
-        counter that can drift when tracks are appended asynchronously.
-        """
-        if self._repeat:
-            if self._current_item is not None:
-                path = self._playlist.path_of(self._current_item)
-                self._update_ui_for_track(path)
-                self._apply_eq()
-                self._loader.load(path)
-                self._timer_progress.start()
-                self._timer_fft.start()
-            return
-
-        # Ask VLC which media it just started
-        current_media = self._player.get_media()
-        if current_media is None:
-            return
-
-        # MRL is a URI — convert to local path for lookup
-        import urllib.parse
-        mrl = current_media.get_mrl()
-        if mrl.startswith("file://"):
-            # urlparse handles both Unix (file:///home/...) and Windows
-            # (file:///C:/...) correctly; mrl[7:] left a leading slash on
-            # Windows paths (/C:/Music/...) which broke the playlist lookup.
-            new_path = urllib.parse.unquote(urllib.parse.urlparse(mrl).path)
-            if sys.platform == "win32" and len(new_path) > 2 \
-                    and new_path[0] == "/" and new_path[2] == ":":
-                new_path = new_path[1:]  # /C:/foo → C:/foo
-        else:
-            new_path = mrl
-
-        # Find this path in the playlist
-        new_item = self._playlist.item_by_path(new_path)
-        if new_item is None:
-            # Try a looser match (Windows drive letters, encoding differences)
-            new_path_norm = os.path.normpath(new_path)
-            for r in range(self._playlist.topLevelItemCount()):
-                it = self._playlist.item_at_row(r)
-                if it and os.path.normpath(self._playlist.path_of(it)) == new_path_norm:
-                    new_item = it
-                    break
-
-        if new_item is None:
-            return
-
-        new_row = self._playlist.indexOfTopLevelItem(new_item)
-        self._current_track = new_row
-        self._current_item  = new_item
-        self._playlist.clearSelection()
-        self._playlist.setCurrentItem(new_item)
-        self._playlist.scrollToItem(new_item)   # keep current track visible
-        self._update_ui_for_track(new_path)
-        self._apply_eq()
-        self._loader.load(new_path)
-        self._timer_progress.start()
-        self._timer_fft.start()
-
-    def _resync_current_track(self) -> None:
-        """Recompute _current_track row index after a drag-and-drop reorder."""
-        if self._current_item is not None:
-            self._current_track = self._playlist.indexOfTopLevelItem(self._current_item)
-
-    def _toggle_play(self) -> None:
-        if self._player.is_playing():
-            self._list_player.pause()
-            self._set_play_icon(False)
-            self._timer_progress.stop()
-            self._timer_fft.stop()
-        else:
-            if self._current_track is None and self._playlist.topLevelItemCount() > 0:
-                self._play_item(self._playlist.topLevelItem(0))
-            else:
-                self._list_player.play()
-                self._set_play_icon(True)
-                self._timer_progress.start()
-                self._timer_fft.start()
-
     def _on_volume_changed(self, v: int) -> None:
-        self._player.audio_set_volume(v)
+        self._playback.player.audio_set_volume(v)
         self._volume_label.setText(f"{v}%")
 
     def _toggle_mute(self) -> None:
         if self._btn_mute.isChecked():
             self._volume_before_mute = self._volume.value()
-            self._player.audio_set_volume(0)
+            self._playback.player.audio_set_volume(0)
         else:
             restored = getattr(self, "_volume_before_mute", 80)
-            self._player.audio_set_volume(restored)
+            self._playback.player.audio_set_volume(restored)
             self._volume.setValue(restored)
         self._icon_manager.set_mute_icon(
             self._btn_mute, self._btn_mute.isChecked(),
@@ -1121,41 +860,6 @@ class MainWindow(QMainWindow):
         self._flux.reset()
         self._vumeter.reset()
 
-    def _stop(self) -> None:
-        self._list_player.stop()
-        self._set_play_icon(False)
-        self._progress.setValue(0)
-        self._timer_progress.stop()
-        self._timer_fft.stop()
-        self._timer_end_grace.stop()
-        self._reset_visualizations()
-        self.statusBar().showMessage("Stopped.")
-
-    def _next_track(self) -> None:
-        if self._current_track is None:
-            return
-        if self._repeat:
-            self._play_item(self._playlist.item_at_row(self._current_track))
-            return
-        result = self._list_player.next()
-        if result == -1:
-            self._list_player.stop()
-            self._timer_fft.stop()
-            self._timer_progress.stop()
-            self._set_play_icon(False)
-            self._progress.setValue(0)
-            self._time_label.setText("0:00 / 0:00")
-            self._reset_visualizations()
-            self.statusBar().showMessage("End of playlist.")
-
-    def _prev_track(self) -> None:
-        if self._current_track is None:
-            return
-        if self._current_track == 0:
-            self._player.set_position(0.0)
-            return
-        self._play_item(self._playlist.item_at_row(self._current_track - 1))
-
     def _set_toggle_icon(self, btn, icon_name: str, active: bool) -> None:
         """Regenerate a toggle button icon with swapped colours when active."""
         self._icon_manager.set_toggle_icon(
@@ -1166,68 +870,18 @@ class MainWindow(QMainWindow):
         )
 
     def _toggle_shuffle(self) -> None:
-        self._shuffle = self._btn_shuffle.isChecked()
-        self._set_toggle_icon(self._btn_shuffle, "icon_shuffle", self._shuffle)
-        if not self._shuffle:
-            self._shuffle_order = []   # clear stale order
-        if self._current_track is not None:
-            self._rebuild_media_list(from_row=self._current_track, reshuffle=True)
+        """Reads the button's new checked-state and hands it to
+        PlaybackController (which owns _shuffle/_shuffle_order and the
+        rebuild-on-toggle logic); only the icon repaint stays here, since
+        PlaybackController doesn't know about buttons/IconManager — see
+        PlaybackController.toggle_shuffle()'s docstring."""
+        self._playback.toggle_shuffle(self._btn_shuffle.isChecked())
+        self._set_toggle_icon(self._btn_shuffle, "icon_shuffle", self._playback.shuffle)
 
     def _toggle_repeat(self) -> None:
-        self._repeat = self._btn_repeat.isChecked()
-        self._set_toggle_icon(self._btn_repeat, "icon_repeat", self._repeat)
-        mode = vlc.PlaybackMode.repeat if self._repeat else vlc.PlaybackMode.default
-        self._list_player.set_playback_mode(mode)
-
-    def _seek(self, value: int) -> None:
-        self._player.set_position(value / 1_000.0)
-
-    # ------------------------------------------------------------------
-    # Progress timer
-    # ------------------------------------------------------------------
-
-    def _update_progress(self) -> None:
-        state = self._player.get_state()
-        if state in (vlc.State.Ended, vlc.State.Stopped) and not self._player.is_playing():
-            # Only declare end-of-playlist if the list_player is also stopped
-            # (not just mid-transition between tracks).
-            lp_state = self._list_player.get_state()
-            if lp_state not in (vlc.State.Ended, vlc.State.Stopped, vlc.State.NothingSpecial):
-                return  # VLC is transitioning — don't touch timers
-            # Use a short grace period: if a track is appended within 200 ms
-            # (e.g. user drops a file just as the last track ends), the timer
-            # will be cancelled by _on_media_appended before it fires, so we
-            # never freeze the visualisations for a track that's about to play.
-            if not self._timer_end_grace.isActive():
-                self._timer_end_grace.start()
-            return
-        # Still playing — cancel any pending end-of-playlist grace timer
-        if self._timer_end_grace.isActive():
-            self._timer_end_grace.stop()
-        total = self._player.get_length()
-        if total > 0:
-            self._progress.setValue(int(self._player.get_position() * 1_000))
-            cur = self._player.get_time()
-            self._time_label.setText(
-                f"{self._ms_to_str(cur)} / {self._ms_to_str(total)}"
-            )
-
-    def _on_end_grace_timeout(self) -> None:
-        """Fires 200 ms after end-of-playlist is detected — confirms it's real."""
-        if self._player.is_playing():
-            return  # a new track started during the grace period
-        self._timer_progress.stop()
-        self._timer_fft.stop()
-        self._set_play_icon(False)
-        self._progress.setValue(0)
-        self._time_label.setText("0:00 / 0:00")
-        self._reset_visualizations()
-        self.statusBar().showMessage("End of playlist.")
-
-    @staticmethod
-    def _ms_to_str(ms: int) -> str:
-        s = max(0, ms // 1_000)
-        return f"{s // 60}:{s % 60:02d}"
+        """See _toggle_shuffle()'s docstring — same split."""
+        self._playback.toggle_repeat(self._btn_repeat.isChecked())
+        self._set_toggle_icon(self._btn_repeat, "icon_repeat", self._playback.repeat)
 
     # ------------------------------------------------------------------
     # FFT timer
@@ -1242,7 +896,7 @@ class MainWindow(QMainWindow):
             self._known_sample_rate = sr
             self._spectrum.set_sample_rate(sr)
             self._spectrogram.set_sample_rate(sr)
-        pos = self._player.get_position()
+        pos = self._playback.player.get_position()
         try:
             frame = compute_fft_frame(samples, pos, self._config["bar_count"])
         except Exception as e:
@@ -1272,20 +926,8 @@ class MainWindow(QMainWindow):
         eq_state = self._config.get("eq_state", {})
         # Always save state (even on Close), so it survives re-open and app restart
         self._config["eq_state"] = self._settings.open_equalizer_dialog(
-            self._player, eq_state, self)
+            self._playback.player, eq_state, self)
         save_config(self._config)
-
-    # ------------------------------------------------------------------
-    # VLC error callback
-    # ------------------------------------------------------------------
-
-    def _on_vlc_error(self, _event) -> None:
-        self.statusBar().showMessage("Playback error: corrupt or unsupported file.")
-        self._list_player.stop()
-        self._set_play_icon(False)
-        self._timer_progress.stop()
-        self._timer_fft.stop()
-        self._reset_visualizations()
 
     # ------------------------------------------------------------------
     # Keyboard events
@@ -1341,10 +983,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        self._list_player.stop()
+        # Deliberately self._playback.shutdown(), not .stop(): mirrors the
+        # original sequence exactly (list_player + the two playback timers,
+        # no icon/UI reset, no status message) — see shutdown()'s docstring
+        # in ui/playback_controller.py for why reusing stop() here would be
+        # a small but real behaviour change.
+        self._playback.shutdown()
         self._timer_fft.stop()
-        self._timer_progress.stop()
-        self._timer_end_grace.stop()
         self._save_playlist()
 
         # Ask the metadata worker to stop and give it a bounded moment to do
