@@ -12,15 +12,27 @@ import sys
 import socket
 import threading
 import time
-import fcntl
+
+# fcntl is POSIX-only — see _acquire_lock()'s docstring and main()'s
+# Windows branch for why Windows gets a different detection strategy
+# instead of an equivalent file lock.
+if sys.platform != "win32":
+    import fcntl
 
 SINGLE_INSTANCE_PORT = 47847
 
 BASE_DIR   = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 
-# Lock file path — created as soon as the first instance starts
+# Lock file path — created as soon as the first instance starts. POSIX
+# only; see _acquire_lock().
 LOCK_FILE  = os.path.join(os.path.expanduser("~"), ".config", "quark_audio_player.lock")
+
+# Returned by _acquire_lock() on Windows in place of a real lock handle —
+# see _acquire_lock()'s docstring. Never closed, never touches fcntl. Not
+# itself what detects a second instance on Windows — main()'s Windows
+# branch does that via the socket, before this is ever called.
+_WINDOWS_LOCK_SENTINEL = object()
 
 
 def _acquire_lock():
@@ -29,7 +41,21 @@ def _acquire_lock():
     Returns the open file handle on success (lock held as long as handle is open),
     or None if another instance already holds the lock.
     Uses fcntl.LOCK_EX | LOCK_NB so it never blocks.
+
+    Windows: fcntl doesn't exist on this platform, and no native equivalent
+    (e.g. msvcrt.locking) is implemented here — deliberately left out
+    rather than shipped untested, since there's no way to verify one on
+    this machine tonight. This function always returns
+    _WINDOWS_LOCK_SENTINEL on Windows instead (truthy, never None) — it
+    cannot report "another instance is running" there, which is exactly
+    why main() checks the socket FIRST on Windows, before ever calling
+    this function, rather than relying on the `lock_fh is None` branch
+    below (see main()'s Windows branch for the actual detection and the
+    known race it leaves open).
     """
+    if sys.platform == "win32":
+        return _WINDOWS_LOCK_SENTINEL
+
     os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
     try:
         fh = open(LOCK_FILE, "w")
@@ -83,7 +109,34 @@ def main() -> None:
     args     = sys.argv[1:]
     path_arg = " ".join(args) if args else None
 
-    # ── Single-instance check via lock file (instantaneous, no race condition) ──
+    if sys.platform == "win32":
+        # No POSIX file lock on this platform (see _acquire_lock()'s
+        # docstring) — _acquire_lock() can never report "another instance
+        # is running" here, so the socket is the only way to detect one.
+        # Probe it FIRST, before _acquire_lock() is even called, by
+        # reusing _try_send_to_existing() as-is.
+        #
+        # Side effect of reusing it as-is: its retry loop (up to 8
+        # attempts, ~1.75s worst case) was tuned for "we already know an
+        # instance exists via the lock file, keep retrying while its
+        # listener thread finishes starting" — it now also runs on every
+        # normal Windows launch where nothing is listening, adding up to
+        # ~1.75s to startup in that case. Accepted for tonight rather than
+        # writing a second, untested probe function.
+        #
+        # Known race, documented rather than silently left open (see
+        # CLAUDE.md's Gotchas): two near-simultaneous launches can both
+        # reach this check before either has bound the listener socket in
+        # _start_listener() yet, both see "nobody's home", and both
+        # proceed — ending up as two live instances. The POSIX file lock
+        # below closes this race with an atomic, instantaneous flock();
+        # Windows has no equivalent here tonight.
+        if _try_send_to_existing([path_arg] if path_arg else []):
+            return
+
+    # ── Single-instance check via lock file (instantaneous, no race
+    # condition on POSIX; a no-op sentinel on Windows, where the check
+    # above already handled detection — see _acquire_lock()'s docstring) ──
     lock_fh = _acquire_lock()
     if lock_fh is None:
         # Another instance is running — forward the file and exit immediately

@@ -23,8 +23,15 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   assume broader coverage exists when asked to "verify" something.
 
 ## Architecture map
-- `main.py` — entry point; single-instance lock (`fcntl`) + localhost socket
-  (port 47847) forwards a newly-opened file to the already-running instance.
+- `main.py` — entry point; single-instance detection is platform-split.
+  POSIX: an `fcntl` file lock (`_acquire_lock()`), atomic and race-free.
+  Windows (no `fcntl`): `_acquire_lock()` is a no-op there (always returns
+  `_WINDOWS_LOCK_SENTINEL`, never `None`), so `main()` instead probes the
+  localhost socket directly via `_try_send_to_existing()` *before* even
+  calling `_acquire_lock()` — see Gotchas below for the known race this
+  leaves open on Windows. The same socket (port 47847) is also how a
+  newly-opened file gets forwarded to an already-running instance, on
+  every platform.
 - `vlc_setup.py` — **must be imported before any `import vlc`**; sets
   `PYTHON_VLC_LIB_PATH` / `PYTHON_VLC_MODULE_PATH` for frozen vs dev builds,
   Windows vs Linux.
@@ -403,6 +410,26 @@ that audit flagged.
   See the `PlaylistIngestionManager` entry under "MainWindow extraction
   candidates" for the full empirical result and the actual mechanism
   (event-loop opportunity, not shutdown order).
+- Single-instance detection on Windows has no equivalent to POSIX's
+  atomic `flock()`. `main.py::_acquire_lock()` always returns a no-op
+  sentinel there (`_WINDOWS_LOCK_SENTINEL`, never `None` — it can't tell
+  you another instance exists), so `main()` instead probes the localhost
+  socket via `_try_send_to_existing()` *before* `_acquire_lock()` is even
+  called on Windows. This is a **known, accepted limitation, not a
+  silently-fixed one**: two near-simultaneous launches on Windows can
+  both reach that probe before either has bound its listener socket in
+  `_start_listener()`, both conclude "nobody's home", and both proceed to
+  start a full instance — a race POSIX's atomic file lock closes
+  instantaneously and Windows currently doesn't. Deliberately left this
+  way rather than implementing a native Windows lock (e.g.
+  `msvcrt.locking`) untested, with no Windows machine available to verify
+  it. Side effect worth knowing before "fixing" the symptom: reusing
+  `_try_send_to_existing()` as the Windows probe means every normal
+  Windows launch (no other instance running) also eats that function's
+  full retry budget (up to 8 attempts, ~1.75s worst case) before falling
+  through to start normally — that loop was tuned for "we already know an
+  instance exists, keep retrying while its listener thread finishes
+  starting", not for a fast "is anyone home" check.
 
 ## Workflow
 - Commit before any multi-file change; prefer small, reviewable diffs over

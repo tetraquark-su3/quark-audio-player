@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import sys
-import re
 import numpy as np
 from PyQt6.QtCore    import Qt, QTimer, pyqtSlot, pyqtSignal
 from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter, QPen
