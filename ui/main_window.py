@@ -10,7 +10,7 @@ import os
 import sys
 import numpy as np
 from PyQt6.QtCore    import Qt, QTimer, pyqtSlot, pyqtSignal
-from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter, QPen
+from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QSplitter, QSplitterHandle, QTabWidget,
