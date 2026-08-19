@@ -471,6 +471,42 @@ that audit flagged.
   crashes; `EqualizerDialog.eq_state` returns the original saved dict
   unchanged; both confirmed *not* regressed on the normal (real
   equalizer) path with separate control runs.
+- `PlaybackController._on_vlc_error` (`MediaPlayerEncounteredError`
+  handler) used to be attached directly to libvlc's event manager
+  (`event_attach(..., self._on_vlc_error)`) instead of being wired through
+  a `pyqtSignal` like its sibling `_on_vlc_next_item`
+  (`MediaListPlayerNextItemSet`). libvlc invokes registered callbacks on
+  its own internal C thread, not the Qt thread — so the handler's body
+  (`status_message` → `QStatusBar.showMessage`, `_set_play_icon` →
+  `QPushButton.setIcon`, `_timer_progress.stop()`/`_timer_fft_stop()` →
+  `QTimer.stop()`) ran off the Qt thread. `QTimer.stop()` from another
+  thread is explicitly unsupported by Qt (`QObject::killTimer: Timers
+  cannot be stopped from another thread`); the `QWidget` calls are
+  unsupported too. Fixed to match `_on_vlc_next_item`'s pattern exactly —
+  not a new approach: added `_vlc_error_signal = pyqtSignal()`, changed
+  the `event_attach` callback to `lambda _e: self._vlc_error_signal.emit()`
+  (the only thing now running on libvlc's thread — safe, since `.emit()`
+  across threads just queues delivery), connected
+  `self._vlc_error_signal.connect(self._on_vlc_error)` in `__init__`
+  alongside the existing `_vlc_next_item_signal` connect, and marked
+  `_on_vlc_error` `@pyqtSlot()`. `_on_vlc_error`'s body is untouched; its
+  signature dropped an `_event` parameter that was never read (confirmed
+  by grep — no direct `self._on_vlc_error(...)` call exists anywhere in
+  the repo, only the `.connect()` reference, so nothing depended on the
+  old signature). Verified by emitting `_vlc_error_signal` from a real
+  background Python thread and confirming all three side effects ran with
+  `QThread.currentThread()` equal to the Qt main thread.
+
+  This was an ultrareview finding (`bug_017`), but it wasn't a fresh
+  discovery — the `PlaybackController` extraction's own audit had already
+  flagged `_on_vlc_error` as "the same kind of VLC-event wiring as the
+  next-item handler" (see its "Done" entry above) while moving it
+  verbatim. The audit noticed the *category* match but not that the two
+  handlers' actual wiring differed — `_on_vlc_next_item` was signal-based
+  and thread-safe, `_on_vlc_error` was a direct callback and wasn't. The
+  bug was real and pre-existing (moved as-is from `MainWindow`, not
+  introduced by the extraction), just not connected to its own "same kind
+  of wiring" observation at the time.
 
 ## Workflow
 - Commit before any multi-file change; prefer small, reviewable diffs over

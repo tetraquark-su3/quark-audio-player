@@ -144,6 +144,7 @@ class PlaybackController(QObject):
     # Fired from VLC's own callback threads → marshalled onto the Qt thread.
     # Internal wiring only; nothing outside this class connects to these.
     _vlc_next_item_signal  = pyqtSignal()
+    _vlc_error_signal      = pyqtSignal()
     _media_appended_signal = pyqtSignal(str, object)  # path, target_list
 
     def __init__(
@@ -184,7 +185,8 @@ class PlaybackController(QObject):
         self._vlc = vlc.Instance("--reset-plugins-cache")
         self._player = self._vlc.media_player_new()
         self._player.event_manager().event_attach(
-            vlc.EventType.MediaPlayerEncounteredError, self._on_vlc_error
+            vlc.EventType.MediaPlayerEncounteredError,
+            lambda _e: self._vlc_error_signal.emit(),
         )
         self._list_player = self._vlc.media_list_player_new()
         self._list_player.set_media_player(self._player)
@@ -216,6 +218,7 @@ class PlaybackController(QObject):
         self._timer_end_grace.timeout.connect(self._on_end_grace_timeout)
 
         self._vlc_next_item_signal.connect(self._on_vlc_next_item)
+        self._vlc_error_signal.connect(self._on_vlc_error)
         self._media_appended_signal.connect(self._on_media_appended)
 
     def bind(
@@ -636,7 +639,8 @@ class PlaybackController(QObject):
     # VLC error callback
     # ------------------------------------------------------------------
 
-    def _on_vlc_error(self, _event) -> None:
+    @pyqtSlot()
+    def _on_vlc_error(self) -> None:
         self._status_message("Playback error: corrupt or unsupported file.")
         self._list_player.stop()
         self._set_play_icon(False)
