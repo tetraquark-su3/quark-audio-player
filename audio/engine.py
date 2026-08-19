@@ -158,11 +158,13 @@ def build_detail_text(path: str) -> str:
 class SampleLoader:
     """
     Loads an audio file's samples in a background daemon thread.
-    Access .samples and .sample_rate after the thread completes.
+    Access .samples, .sample_rate, and .duration after the thread completes.
 
-    Also tracks the measured VLC audio latency so that _compute_sync_pos()
-    can return a position that is aligned with what the DAC is actually
-    outputting rather than what the VLC decoder has reached.
+    Does not track VLC audio latency or interact with compute_sync_pos()
+    in any way — that function (module-level, no leading underscore,
+    despite an earlier version of this docstring claiming one) is unrelated
+    dead code with zero callers anywhere in the project; see CLAUDE.md's
+    "Dead code" section.
     """
 
     def __init__(self) -> None:
