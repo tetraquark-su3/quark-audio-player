@@ -178,6 +178,7 @@ class PlaybackController(QObject):
         self._shuffle       = False
         self._repeat        = False
         self._shuffle_order: list[int] = []   # fixed random order, generated once
+        self._eq_unavailable_warned = False   # see _apply_eq()'s docstring
 
         # VLC — MediaPlayer handles EQ/volume; MediaListPlayer handles transitions
         self._vlc = vlc.Instance("--reset-plugins-cache")
@@ -420,15 +421,31 @@ class PlaybackController(QObject):
             self._list_player.set_media_list(ml)
 
     def _apply_eq(self) -> None:
-        """Re-attach equalizer to the current MediaPlayer (survives track changes)."""
+        """Re-attach equalizer to the current MediaPlayer (survives track changes).
+
+        libvlc_audio_equalizer_new() returns None on a VLC install without
+        audio-equalizer support (same condition ui/dialogs.py::EqualizerDialog
+        already guards against). When that happens here, playback continues
+        without EQ rather than crashing on the None passed to the
+        set_preamp/set_amp_at_index/set_equalizer calls below — this runs on
+        every track change, so the user is told once per app run via
+        status_message (self._eq_unavailable_warned), not on every track."""
         eq_state = self._eq_state_provider()
-        if eq_state:
-            eq = vlc.libvlc_audio_equalizer_new()
-            vlc.libvlc_audio_equalizer_set_preamp(eq, eq_state.get("preamp", 0.0))
-            for i, amp in enumerate(eq_state.get("bands", [])):
-                vlc.libvlc_audio_equalizer_set_amp_at_index(eq, amp, i)
-            vlc.libvlc_media_player_set_equalizer(self._player, eq)
-            vlc.libvlc_audio_equalizer_release(eq)
+        if not eq_state:
+            return
+        eq = vlc.libvlc_audio_equalizer_new()
+        if eq is None:
+            if not self._eq_unavailable_warned:
+                self._status_message(
+                    "Equalizer not supported by this VLC installation — playing without EQ."
+                )
+                self._eq_unavailable_warned = True
+            return
+        vlc.libvlc_audio_equalizer_set_preamp(eq, eq_state.get("preamp", 0.0))
+        for i, amp in enumerate(eq_state.get("bands", [])):
+            vlc.libvlc_audio_equalizer_set_amp_at_index(eq, amp, i)
+        vlc.libvlc_media_player_set_equalizer(self._player, eq)
+        vlc.libvlc_audio_equalizer_release(eq)
 
     @pyqtSlot()
     def _on_vlc_next_item(self) -> None:

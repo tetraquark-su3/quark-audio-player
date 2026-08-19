@@ -192,6 +192,15 @@ class EqualizerDialog(QDialog):
 
     @property
     def eq_state(self) -> dict:
+        if self._equalizer is None:
+            # No interaction was ever possible (see __init__'s early return
+            # above) — the sliders sit at their construction-time 0 default,
+            # never restored from self._eq_state. Return the state we were
+            # opened with, unchanged, instead of reading the sliders: a
+            # Close on an EQ-less VLC install must not overwrite a
+            # previously-saved eq_state with zeros. Same guard shape as
+            # _update_band/_update_preamp/_apply_preset/_reset above.
+            return self._eq_state
         n = len(self._sliders)
         return {
             "preamp":  self._slider_preamp.value() / 10.0,

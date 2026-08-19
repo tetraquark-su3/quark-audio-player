@@ -430,6 +430,47 @@ that audit flagged.
   through to start normally — that loop was tuned for "we already know an
   instance exists, keep retrying while its listener thread finishes
   starting", not for a fast "is anyone home" check.
+- `libvlc_audio_equalizer_new()` returns `NULL` on a VLC install without
+  audio-equalizer support. `ui/dialogs.py::EqualizerDialog.__init__`
+  already guarded this; two other sites needed the same guard and are now
+  fixed — an ultrareview report (`merged_bug_002`) had bundled both under
+  one number, but they're independent bugs at independent call sites with
+  independent fixes, not one bug with two symptoms:
+    - `PlaybackController._apply_eq()` (`ui/playback_controller.py`) ran
+      on every track change and unconditionally passed the `NULL` result
+      to `set_preamp`/`set_amp_at_index`/`set_equalizer`, crashing the
+      first time a track played with a saved (non-empty) `eq_state` on
+      such an install. Fixed to skip attaching an equalizer and continue
+      playback normally (flat, no EQ) when `NULL`. Since this runs
+      silently on every track, a popup per track would be intrusive — it
+      instead warns exactly once per app run via `status_message`
+      (`self._eq_unavailable_warned`), then stays silent for the rest of
+      the session. `_apply_eq()` only ever *reads* `eq_state` (via
+      `eq_state_provider()`, injected read-only) — it was never the site
+      that could corrupt the saved value; confirmed by inspection, not
+      assumed.
+    - `EqualizerDialog.eq_state` (`ui/dialogs.py`) — the actual site that
+      could corrupt a saved `eq_state`: on the same `NULL` condition,
+      `__init__` disables the sliders and returns before the block that
+      restores the saved state into them, so they sit at their
+      construction-time 0 default. The property used to read those
+      sliders unconditionally, so opening and closing the EQ dialog once
+      on such an install — even without touching anything — silently
+      overwrote a previously-saved `eq_state` with zeros, via
+      `MainWindow._open_equalizer`'s unconditional
+      `self._config["eq_state"] = ...` + `save_config()`. Fixed to return
+      `self._eq_state` (the state the dialog was opened with) unchanged
+      when `self._equalizer is None`, instead of reading the sliders —
+      consistent with `open_equalizer_dialog()`'s documented contract
+      ("persists whatever was last heard"): nothing could be heard or
+      changed when the controls were disabled, so the old state is what
+      "last heard" means here.
+  Verified with `vlc.libvlc_audio_equalizer_new` mocked to return `None`
+  (no Windows/EQ-less-VLC machine available to trigger the real
+  condition) — `_apply_eq()` warns exactly once across 3 calls and never
+  crashes; `EqualizerDialog.eq_state` returns the original saved dict
+  unchanged; both confirmed *not* regressed on the normal (real
+  equalizer) path with separate control runs.
 
 ## Workflow
 - Commit before any multi-file change; prefer small, reviewable diffs over
