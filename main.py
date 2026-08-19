@@ -110,7 +110,7 @@ def main() -> None:
     window.show()
 
     if path_arg and os.path.isfile(path_arg) and is_audio(path_arg):
-        window._add_file(path_arg, play_when_ready=True)
+        window._ingestion.add_file(path_arg, play_when_ready=True)
 
     t = threading.Thread(target=_start_listener, args=(window,), daemon=True)
     t.start()

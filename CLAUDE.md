@@ -35,14 +35,15 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   compensate VLC's reported decoder position with `audio_get_delay()` so
   visuals match what's actually audible) — **dead code**, no callers found
   anywhere in the project; see Dead code below.
-- `ui/main_window.py` — `MainWindow`, ~1000 lines. Wires VLC playback (now
+- `ui/main_window.py` — `MainWindow`, ~900 lines. Wires VLC playback (now
   via `PlaybackController`) to the playlist, visualisations, file browser,
   settings, EQ, and shortcuts. One large class doing both UI construction
   and playback logic — a natural split candidate, not a "just rewrite it"
-  candidate. Six of the seven split points below have been extracted so far
-  (`PlaylistPersistence`, `IconManager`, `AlbumArtPanel`, `FileBrowserPanel`,
-  `SettingsController`, `PlaybackController`); see MainWindow extraction
-  candidates below for the rest.
+  candidate. All seven split points identified by the initial audit have
+  now been extracted (`PlaylistPersistence`, `IconManager`, `AlbumArtPanel`,
+  `FileBrowserPanel`, `SettingsController`, `PlaybackController`,
+  `PlaylistIngestionManager`) — see MainWindow extraction candidates below
+  for the full history.
 - `ui/playlist_persistence.py` — JSON load/save/save-as for the playlist
   track list, extracted from `MainWindow`. Pure Python, no Qt/VLC
   dependency; tested in `tests/test_playlist_persistence.py`.
@@ -124,6 +125,13 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   handlers, and play/pause/stop/next/prev/shuffle/repeat/seek — extracted
   from `MainWindow`. Full rationale and scope notes under "MainWindow
   extraction candidates" below.
+- `ui/playlist_ingestion_manager.py` — `PlaylistIngestionManager`. Owns
+  `_MetadataWorker` (background `QThread` reading metadata via
+  `audio.engine.read_metadata`), the dedup+enqueue methods
+  (`add_file`/`add_files`/`add_folder`, public renames of the former
+  `_add_file`/`_add_files`/`_add_folder`), `_pending_play`, and
+  `_on_track_ready` — extracted from `MainWindow`. Full rationale and scope
+  notes under "MainWindow extraction candidates" below.
 - `ui/playlist.py`, `ui/visualizations.py`, `ui/dialogs.py`, `ui/widgets.py`,
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
@@ -137,10 +145,10 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   used there.
 
 ## MainWindow extraction candidates
-`MainWindow.__init__`/`_build_ui` currently mix VLC wiring, UI construction,
+`MainWindow.__init__`/`_build_ui` used to mix VLC wiring, UI construction,
 and playback logic in ~340 lines with no separation, making the wiring hard
 to test in isolation. Concrete split points identified by audit. Progress:
-6 of 7 done, 1 remaining.
+7 of 7 done — nothing left of the original audit's scope.
 
 Done:
 - `PlaylistPersistence` (`ui/playlist_persistence.py`) — load/save/save-as
@@ -251,15 +259,104 @@ Done:
   below), the equalizer dialog, and a live drag-and-drop-equivalent append
   during playback — no regressions found.
 
-Remaining (last one, 7/7):
-- `PlaylistIngestionManager` — `_MetadataWorker` + `_add_file(s)`/
-  `_add_folder`. Its live-append call already has a home to move into:
-  `PlaybackController.append_to_active_list(path)` (public, designed for
-  exactly this — see the `PlaybackController` entry above) replaces the
-  old private `_append_to_media_list`, and `MainWindow._on_track_ready`'s
-  guard becomes a read of `PlaybackController.current_track` instead of a
-  raw attribute. No new interface design needed for this extraction on the
-  playback side — just reconnecting existing calls to their new owner.
+- `PlaylistIngestionManager` (`ui/playlist_ingestion_manager.py`) — the
+  last of the seven, closing out the audit. Owns `_MetadataWorker` (moved
+  verbatim, including its docstring on the stop()/wait() shutdown
+  trade-off), the dedup+enqueue methods (`add_file`/`add_files`/
+  `add_folder`, public renames of the former `_add_file`/`_add_files`/
+  `_add_folder`), `_pending_play`, `_on_track_ready` (the worker's
+  `track_ready` consumer, including the branch that appends live to
+  `PlaybackController`'s VLC media list when a track is already playing),
+  and `_natural_key` (module-level, used only by `add_folder`).
+
+  First extraction to depend on another already-extracted class rather
+  than only on `MainWindow`: `playback: PlaybackController` is held as a
+  direct reference (constructor argument, never reassigned), not wrapped
+  in per-operation callables — `PlaybackController`'s own module docstring
+  had already designed `current_track`/`append_to_active_list` as "the
+  interface for the not-yet-extracted `PlaylistIngestionManager`", and the
+  callback-avoidance reasoning that keeps `PlaybackController` from
+  depending on `MainWindow` doesn't apply between two sibling extracted
+  classes with no circular-import risk — same shape of dependency
+  `PlaybackController` itself has on `self._playlist`. `playlist:
+  PlaylistWidget` gets the same direct-reference treatment, for
+  `item_by_path`/`add_track`. `status_message` stays a callback (mirrors
+  `PlaybackController`'s own `status_message`) — this class has no
+  business holding a live `QMainWindow` reference just to call
+  `statusBar().showMessage()` occasionally.
+
+  Two-phase construction (`__init__`/`bind()`), same shape as
+  `PlaybackController`'s: `MainWindow.__init__` constructs this class at
+  the exact point it used to construct `_MetadataWorker` directly —
+  before `_build_ui()` creates `self._playlist` — so the worker thread
+  starts at the same relative moment in startup as before, preserving that
+  detail of behaviour rather than changing it as a side effect of the
+  extraction. `bind(playlist)` is called once, in the same end-of-
+  `_build_ui()` block as `self._playback.bind(...)`; order between the two
+  `bind()` calls doesn't matter (neither depends on the other).
+
+  `MainWindow.closeEvent()` calls this class's `shutdown()` *before*
+  `PlaybackController.shutdown()`, reversing the pre-extraction order
+  (`_playback.shutdown()` first, `_meta_worker.stop()`/`wait()` last) —
+  while the worker is still draining, a late `track_ready` could still
+  call `self._playback.append_to_active_list()` via `_on_track_ready`'s
+  `current_track` branch, and `PlaybackController.shutdown()` doesn't
+  clear `current_track`, so that guard stays open even after VLC has been
+  told to stop. Verified empirically, not just reasoned about: dropping a
+  file and closing the window in the same synchronous callback (no delay)
+  across 4/4 scripted runs never saved the file into
+  `~/.config/quark_audio_player_playlist.json`, regardless of shutdown
+  order — a control run with a real 300ms delay between drop and close did
+  save it. The actual mechanism: `_MetadataWorker.track_ready` is a queued
+  cross-thread signal only delivered when the main thread's Qt event loop
+  next runs, and `QThread.wait()` blocks the calling thread without
+  pumping that loop — so `_on_track_ready` can't run between the drop and
+  `_save_playlist()` when there's no event-loop turn in between, no matter
+  which `shutdown()` goes first. So: this reordering protects the
+  `append_to_active_list`-on-a-stopped-`PlaybackController` case for a
+  track genuinely mid-playback; it does not make a last-second drop
+  survive into the saved playlist, and shouldn't be described that way
+  again.
+
+  `FileBrowserPanel`'s `add_files_requested`/`add_folder_requested`
+  signals retarget to `self._ingestion.add_files`/
+  `self._ingestion.add_folder` — literally the one-line reconnect its own
+  docstring promised. `add_file_requested` stays connected to
+  `MainWindow._on_browser_add_file`, which stays in `MainWindow` (only its
+  body's call target changes, from `self._add_file(path)` to
+  `self._ingestion.add_file(path)`) — it mixes ingestion with a
+  `MainWindow`-owned side effect (the status bar message), same
+  "orchestrates things `MainWindow` already owns" reasoning that kept
+  `_apply_config`/`_apply_shortcuts` out of `SettingsController`.
+  `_open_from_socket` and `_on_drop` stay in `MainWindow` for the same
+  reason (window raise/activate, drag-and-drop event handling) and now
+  call `self._ingestion.add_file`/`add_folder` instead of the old private
+  methods. `FileBrowserPanel` itself was not given a reference to
+  `PlaylistIngestionManager` — it stays a leaf widget that emits signals
+  without knowing who listens, consistent with the signal-not-callback
+  choice already justified in its own docstring.
+
+  Testability lands close to zero, same category as `IconManager`/
+  `AlbumArtPanel`/`SettingsController`/most of `PlaybackController`.
+  `_MetadataWorker` is a real `QThread` doing real file I/O and emitting a
+  real Qt signal — not unit-testable without a live thread and event loop.
+  `add_file`/`add_files`/`_on_track_ready` all need a live `PlaylistWidget`
+  for `item_by_path`/`add_track`. `_natural_key` (module-level, genuinely
+  Qt-free) is the one candidate that's actually pure — the same shape of
+  candidate `list_mount_roots()` was for `FileBrowserPanel` — but unlike
+  `list_mount_roots()`, which had real OS-conditional branching (Windows
+  drive letters vs. Linux mount points under specific paths) worth a
+  regression net, `_natural_key` is a one-line sort-key function (regex
+  split + int/lower) with a single call site and no branching of its own;
+  deliberately not given a dedicated test module, the effort/value ratio
+  too low to justify it as its own precedent. Verified instead by live,
+  script-driven runs exercising the real `dropEvent()` → `_on_drop()` →
+  `self._ingestion.add_file()` → `_MetadataWorker` path end to end (the
+  same runs used for the shutdown-order finding above).
+
+All seven MainWindow extraction candidates identified by the initial audit
+are now done — `MainWindow` no longer contains any of the responsibilities
+that audit flagged.
 
 ## Conventions
 - Python 3.10+ type hints throughout; short docstrings on public functions.
@@ -299,6 +396,13 @@ Remaining (last one, 7/7):
   downstream of it via `_on_volume_changed`. Don't "simplify" this back to
   reading VLC; that round-trip is what caused the mute/unmute-resets-to-0%
   bug fixed in this history.
+- `MainWindow.closeEvent()` calling `PlaylistIngestionManager.shutdown()`
+  before `PlaybackController.shutdown()` does **not** make a file dropped
+  right before closing survive into the saved playlist — an earlier guess
+  in this history that it would was checked empirically and found false.
+  See the `PlaylistIngestionManager` entry under "MainWindow extraction
+  candidates" for the full empirical result and the actual mechanism
+  (event-loop opportunity, not shutdown order).
 
 ## Workflow
 - Commit before any multi-file change; prefer small, reviewable diffs over

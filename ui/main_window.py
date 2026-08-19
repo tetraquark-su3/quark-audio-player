@@ -10,7 +10,7 @@ import os
 import sys
 import re
 import numpy as np
-from PyQt6.QtCore    import Qt, QTimer, QThread, pyqtSlot, pyqtSignal
+from PyQt6.QtCore    import Qt, QTimer, pyqtSlot, pyqtSignal
 from PyQt6.QtGui     import QColor, QKeySequence, QShortcut, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout,
@@ -30,6 +30,7 @@ from ui.file_browser_panel import FileBrowserPanel
 from ui.icon_manager  import IconManager
 from ui.playback_controller import PlaybackController
 from ui.playlist      import PlaylistWidget
+from ui.playlist_ingestion_manager import PlaylistIngestionManager
 from ui.playlist_persistence import PlaylistPersistence, PlaylistPersistenceError
 from ui.settings_controller import SettingsController
 from ui.style         import build_stylesheet
@@ -137,76 +138,6 @@ class _StyledSplitter(QSplitter):
 BASE_DIR  = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 
-def _natural_key(s: str):
-        return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
-
-
-class _MetadataWorker(QThread):
-    """
-    Background thread that reads audio metadata without blocking the UI.
-    Push paths with enqueue() or enqueue_many().
-    Emits track_ready(path, meta) on the Qt thread for each file.
-
-    Call stop() then a bounded wait() to shut it down cleanly (see
-    MainWindow.closeEvent()). stop() pushes a sentinel onto the queue so
-    run() exits on its own after processing whatever is already queued —
-    that covers the common case (thread idle or between reads). It cannot
-    interrupt a read_metadata() call already in progress on a slow file;
-    there's no safe way to preempt a blocking call from another thread in
-    Python. That's why closeEvent()'s wait() is bounded rather than
-    unconditional — the app must still be able to close promptly even if
-    this thread is stuck, at the cost of Qt's "QThread: Destroyed while
-    thread is still running" warning in that rare case.
-    """
-    track_ready = pyqtSignal(str, dict)
-
-    _STOP = object()  # sentinel pushed onto the queue to end run()
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        import threading
-        self._queue: list = []
-        self._lock = threading.Lock()
-        self._sem  = threading.Semaphore(0)
-        self.start()
-
-    def enqueue(self, path: str) -> None:
-        with self._lock:
-            self._queue.append(path)
-        self._sem.release()
-
-    def enqueue_many(self, paths: list) -> None:
-        with self._lock:
-            self._queue.extend(paths)
-        for _ in paths:
-            self._sem.release()
-
-    def stop(self) -> None:
-        """Ask run() to exit after it's done with whatever it's currently doing."""
-        with self._lock:
-            self._queue.append(self._STOP)
-        self._sem.release()
-
-    def run(self) -> None:
-        while True:
-            self._sem.acquire()
-            with self._lock:
-                if not self._queue:
-                    continue
-                path = self._queue.pop(0)
-            if path is self._STOP:
-                return
-            try:
-                meta = read_metadata(path)
-            except Exception:
-                meta = {
-                    "title": os.path.basename(path), "artist": "Unknown",
-                    "album": "", "track": "", "duration_str": "0:00",
-                    "bitrate": "", "sample_rate": "",
-                }
-            self.track_ready.emit(path, meta)
-
-
 class MainWindow(QMainWindow):
     """Quark Audio Player — main application window."""
     _socket_file_received  = pyqtSignal(str)
@@ -254,10 +185,18 @@ class MainWindow(QMainWindow):
         self._loader = SampleLoader()
         self._known_sample_rate = 0  # last rate pushed to the freq-axis widgets
 
-        # Async metadata worker — keeps UI responsive while reading tags
-        self._meta_worker = _MetadataWorker(self)
-        self._meta_worker.track_ready.connect(self._on_track_ready)
-        self._pending_play: str | None = None   # path to auto-play once added
+        # Async file/folder ingestion (metadata worker + dedup/enqueue) —
+        # see ui/playlist_ingestion_manager.py. Constructed here (same point
+        # _MetadataWorker used to be constructed directly) so the worker
+        # thread starts at the same relative moment in startup as before;
+        # bind(self._playlist) is called at the end of _build_ui(), same
+        # two-phase pattern as self._playback above and for the same reason
+        # (self._playlist doesn't exist yet at this point).
+        self._ingestion = PlaylistIngestionManager(
+            playback       = self._playback,
+            status_message = lambda msg: self.statusBar().showMessage(msg),
+            parent         = self,
+        )
 
         # FFT/visualisation timer — stays here rather than moving into
         # PlaybackController; see its module docstring for why.
@@ -308,8 +247,8 @@ class MainWindow(QMainWindow):
         # ── Left panel: file browser ────────────────────────────────
         self._file_browser = FileBrowserPanel()
         self._file_browser.add_file_requested.connect(self._on_browser_add_file)
-        self._file_browser.add_files_requested.connect(self._add_files)
-        self._file_browser.add_folder_requested.connect(self._add_folder)
+        self._file_browser.add_files_requested.connect(self._ingestion.add_files)
+        self._file_browser.add_folder_requested.connect(self._ingestion.add_folder)
 
         # ── Right panel: playlist + detail ──────────────────────────
         right_panel = QWidget()
@@ -511,10 +450,17 @@ class MainWindow(QMainWindow):
         # PlaybackController now that they exist — see its module docstring
         # ("Two-phase construction") and __init__'s comment above the
         # PlaybackController(...) call for why this can't happen earlier.
-        # Must stay the last statement in _build_ui(): bind() assumes every
-        # widget it might ever need (and everything else built above) is
-        # already in place.
+        # bind() assumes every widget it might ever need (and everything
+        # else built above) is already in place.
         self._playback.bind(self._playlist, self._progress, self._time_label)
+
+        # Same two-phase reasoning for PlaylistIngestionManager — see its
+        # module docstring. Order relative to self._playback.bind() above
+        # doesn't matter (neither bind() call depends on the other), but
+        # this one must stay the true last statement in _build_ui(): it's
+        # what makes self._ingestion usable at all (self._playlist is None
+        # until this runs).
+        self._ingestion.bind(self._playlist)
 
     def _refresh_icons(self) -> None:
         """Retint all button icons to match the current background."""
@@ -644,77 +590,22 @@ class MainWindow(QMainWindow):
             if not self._playback.player.is_playing():
                 self._playback.play_item(item)
         else:
-            self._add_file(path, play_when_ready=not self._playback.player.is_playing())
+            self._ingestion.add_file(path, play_when_ready=not self._playback.player.is_playing())
 
     # ------------------------------------------------------------------
     # File browser (wiring to FileBrowserPanel's signals)
     # ------------------------------------------------------------------
     def _on_browser_add_file(self, path: str) -> None:
-        self._add_file(path)
+        self._ingestion.add_file(path)
         self.statusBar().showMessage(f"Added: {os.path.basename(path)}")
-
-    def _add_files(self, paths: list) -> None:
-        new_paths = [p for p in paths if self._playlist.item_by_path(p) is None]
-        if not new_paths:
-            return
-        self._meta_worker.enqueue_many(new_paths)
-        n = len(new_paths)
-        self.statusBar().showMessage(f"Loading {n} track{'s' if n > 1 else ''}…")
-
-    def _add_folder(self, folder: str) -> None:
-        paths = [
-            os.path.join(folder, name)
-            for name in sorted(os.listdir(folder), key=_natural_key)
-            if is_audio(os.path.join(folder, name))
-        ]
-        new_paths = [p for p in paths if self._playlist.item_by_path(p) is None]
-        if new_paths:
-            self._meta_worker.enqueue_many(new_paths)
-
-    def _add_file(self, path: str, play_when_ready: bool = False) -> None:
-        """Enqueue path for async metadata loading.
-        If play_when_ready is True and the player is idle, the track will
-        start playing as soon as its metadata arrives.
-        """
-        if self._playlist.item_by_path(path) is not None:
-            return  # duplicate
-        if play_when_ready and not self._playback.player.is_playing():
-            self._pending_play = path
-        self._meta_worker.enqueue(path)
-        
-    @pyqtSlot(str, dict)
-    def _on_track_ready(self, path: str, meta: dict) -> None:
-        """Called by _MetadataWorker when metadata for a path is ready."""
-        self._playlist.add_track(
-            path,
-            meta["track"],
-            meta["artist"],
-            meta["album"],
-            meta["title"],
-            meta["duration_str"],
-        )
-        self.statusBar().showMessage(
-            f"Added: {meta['artist']} — {meta['title']}"
-        )
-        if self._pending_play == path:
-            self._pending_play = None
-            item = self._playlist.item_by_path(path)
-            if item is not None:
-                self._playback.play_item(item)
-        elif self._playback.current_track is not None:
-            # A track was added while playback is active: append it directly
-            # to the existing VLC media list instead of rebuilding from scratch.
-            # Rebuilding calls set_media_list() which resets VLC's internal
-            # position pointer and causes tracks to be skipped or replayed.
-            self._playback.append_to_active_list(path)
 
     def _on_drop(self, event) -> None:
         for url in event.mimeData().urls():
             path = url.toLocalFile()
             if os.path.isfile(path) and is_audio(path):
-                self._add_file(path)
+                self._ingestion.add_file(path)
             elif os.path.isdir(path):
-                self._add_folder(path)
+                self._ingestion.add_folder(path)
         event.accept()
 
     # ------------------------------------------------------------------
@@ -983,6 +874,21 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
+        # self._ingestion.shutdown() runs FIRST, before self._playback's —
+        # deliberately reversed from the pre-extraction ordering (which had
+        # _playback.shutdown() first, _meta_worker.stop()/wait() last).
+        # While the metadata worker is still draining, a track_ready signal
+        # could still call self._playback.append_to_active_list() (see
+        # PlaylistIngestionManager._on_track_ready's current_track branch);
+        # PlaybackController.shutdown() doesn't clear current_track, so that
+        # guard stays open even after VLC has been told to stop. Stopping
+        # ingestion first bounds that window instead of leaving it open for
+        # the rest of closeEvent(). See ui/playlist_ingestion_manager.py's
+        # module docstring ("shutdown() ordering") and CLAUDE.md's
+        # PlaylistIngestionManager entry for the empirically observed effect
+        # on playlist persistence.
+        self._ingestion.shutdown()
+
         # Deliberately self._playback.shutdown(), not .stop(): mirrors the
         # original sequence exactly (list_player + the two playback timers,
         # no icon/UI reset, no status message) — see shutdown()'s docstring
@@ -991,12 +897,5 @@ class MainWindow(QMainWindow):
         self._playback.shutdown()
         self._timer_fft.stop()
         self._save_playlist()
-
-        # Ask the metadata worker to stop and give it a bounded moment to do
-        # so cleanly. If it's stuck in a slow read_metadata() call, wait()
-        # times out and we close anyway rather than hang the app shut down
-        # (see _MetadataWorker's docstring for why that's the trade-off).
-        self._meta_worker.stop()
-        self._meta_worker.wait(2000)
 
         event.accept()
