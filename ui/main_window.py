@@ -477,19 +477,6 @@ class MainWindow(QMainWindow):
     # Button factory
     # ------------------------------------------------------------------
 
-    def _load_icon(self, name: str, override_primary: str = "", override_accent: str = "") -> QIcon:
-        """Generate a themed SVG icon, with PNG fallback.
-        override_primary/accent allow swapping colours for active toggle states.
-        """
-        return self._icon_manager.load_icon(
-            name,
-            style   = self._config.get("icon_style", "neon"),
-            primary = self._config["primary_color"],
-            accent  = self._config["accent_color"],
-            override_primary = override_primary,
-            override_accent  = override_accent,
-        )
-
     def _ctrl_btn(self, label, slot, checkable=False):
         btn = QPushButton()
         btn.setObjectName("controlButton")
