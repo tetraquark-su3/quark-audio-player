@@ -3,7 +3,7 @@ ui/style.py
 Generates the application QSS stylesheet from config values.
 """
 
-from config.settings import derive_color
+from config.settings import derive_color, is_dark_bg
 
 
 def build_stylesheet(config: dict) -> str:
@@ -12,13 +12,10 @@ def build_stylesheet(config: dict) -> str:
     cf  = config["background_color"]   # base background
     cs  = config["selection_color"]    # selection highlight
 
-    # Detect background luminance to pick appropriate text colors
-    bg_hex = cf.lstrip("#")
-    r_bg = int(bg_hex[0:2], 16)
-    g_bg = int(bg_hex[2:4], 16)
-    b_bg = int(bg_hex[4:6], 16)
-    luminance = 0.299 * r_bg + 0.587 * g_bg + 0.114 * b_bg
-    dark_bg = luminance < 128
+    # Detect background luminance to pick appropriate text colors — shared
+    # with MainWindow._apply_config's splitter colors via is_dark_bg(), so
+    # the two can never disagree on dark-vs-light for the same background.
+    dark_bg = is_dark_bg(cf)
 
     # Surface hierarchy — lift on dark bg, darken on light bg
     _step = 1 if dark_bg else -1

@@ -537,9 +537,13 @@ class MainWindow(QMainWindow):
             w.set_colors(cp, ca)
         self.setStyleSheet(build_stylesheet(self._config))
         self._playlist.set_accent_color(self._config["accent_color"])
-        # Update splitter handle colours to match the new theme
-        from config.settings import derive_color
-        _dark = (sum(int(cf.lstrip("#")[i*2:i*2+2], 16) for i in range(3)) / 3) < 128
+        # Update splitter handle colours to match the new theme. Uses the
+        # same is_dark_bg() as ui/style.py::build_stylesheet — was a
+        # simpler, unweighted RGB-mean formula that could disagree with
+        # build_stylesheet's perceptual one on saturated backgrounds,
+        # lifting/darkening surfaces in the opposite direction.
+        from config.settings import derive_color, is_dark_bg
+        _dark = is_dark_bg(cf)
         _step = 1 if _dark else -1
         s2  = derive_color(cf, 16 * _step)
         dot = "#9098b0" if _dark else "#7070a0"

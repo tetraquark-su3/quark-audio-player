@@ -68,6 +68,18 @@ def derive_color(hex_color: str, delta: int) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def is_dark_bg(hex_color: str) -> bool:
+    """True if hex_color should be treated as a dark background.
+    ITU-R BT.601 perceptual luminance (green weighted far higher than red/
+    blue, matching human brightness perception) — not a naive RGB mean.
+    Shared by ui/style.py::build_stylesheet and MainWindow._apply_config so
+    their dark/light classification (and the surface-lift/text-hierarchy
+    direction that depends on it) can never diverge between the two."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+
+
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
