@@ -58,8 +58,14 @@ def _acquire_lock():
 
     os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
     try:
-        fh = open(LOCK_FILE, "w")
+        # "a+" (not "w"): "w" truncates at open time, before flock is even
+        # attempted, so a losing second instance would wipe the winner's
+        # PID off disk despite never acquiring the lock. Don't touch the
+        # file's contents until flock has actually succeeded.
+        fh = open(LOCK_FILE, "a+")
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.seek(0)
+        fh.truncate()
         fh.write(str(os.getpid()))
         fh.flush()
         return fh
