@@ -13,6 +13,18 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 - Windows standalone build: PyInstaller via `quark-player.spec`. That spec
   currently hardcodes Linux paths (`/usr/lib/x86_64-linux-gnu/...`) for the
   VLC binaries — it needs OS-specific paths before it will build on Windows.
+- Linux standalone build: `Dockerfile` + `docker-build.sh`, reproducing a
+  pipeline that previously existed only as shell history and a gitignored
+  `building on ubuntu.txt` (recovered from the initial commit — see git
+  history). Runs PyInstaller inside a `ubuntu:22.04` container (chosen
+  over `24.04` for a glibc-compatibility failure on elementaryOS 7;
+  `20.04` was tried once but never adopted). Does not bundle ffmpeg — see
+  README's "Building a standalone Linux executable" for why. Output goes
+  to `dist-linux-docker/`, never `dist/`, so it can't silently replace the
+  binary currently in daily use. **Reconstructed from historical traces
+  (the recovered committed file, shell history), not yet run end to end —
+  don't assume it produces a working binary until `./docker-build.sh` has
+  actually completed successfully at least once.**
 - Tests: `pytest` (config in `pyproject.toml`, dev deps in
   `requirements-dev.txt` — includes PyQt6, since `ui/icon_manager.py` needs
   it at import time even for its Qt-free tests). Run with `pytest` from the

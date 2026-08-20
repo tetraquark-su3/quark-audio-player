@@ -109,6 +109,40 @@ The resulting `dist\quark-player.exe` is fully self-contained — VLC libraries 
 
 ---
 
+## Building a standalone Linux executable
+
+Requires [Docker](https://docs.docker.com/get-docker/).
+
+```bash
+./docker-build.sh
+```
+
+This builds a `ubuntu:22.04`-based image (`Dockerfile`, installing VLC,
+Python and PyInstaller) and runs PyInstaller against the mounted repo
+inside it, writing the result to `dist-linux-docker/quark-player` — not
+`dist/`, so it never overwrites a working build. Once you've confirmed
+the new binary works, move it into `dist/` yourself.
+
+> Historical note: builds were run on Ubuntu inside Docker rather than
+> directly on the host, and specifically on `ubuntu:22.04` — a newer tag
+> (`ubuntu:24.04`) was tried first and produced a binary linked against a
+> glibc too new to run on at least one user's system (elementaryOS 7,
+> itself based on Ubuntu 22.04). `ubuntu:20.04` was tried once around the
+> same time but was never adopted for a real build.
+
+> **ffmpeg note:** unlike the Windows build above, this build does not
+> bundle its own copy of ffmpeg — bundling it into the binary was tried
+> once in this project's history and never adopted for a real release
+> build. `SampleLoader._run_ffmpeg` resolves `ffmpeg` via `shutil.which()`
+> at runtime, on the machine running the binary, not the one that built
+> it — so the fallback decoder is *possible* on this build, not
+> *guaranteed* the way it is on Windows: it works as long as the end
+> user's machine has ffmpeg installed (see Dependencies), same as running
+> `python main.py` directly, but this build doesn't ensure that for them
+> the way the Windows build's `--add-binary` does.
+
+---
+
 ## Configuration
 
 Settings are stored in `~/.config/quark_audio_player.json`.  
