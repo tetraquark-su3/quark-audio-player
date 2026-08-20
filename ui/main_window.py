@@ -147,7 +147,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Quark Audio Player v0.6.6")
+        self.setWindowTitle("Quark Audio Player v0.7.0")
         app_icon_path = os.path.join(ASSETS_DIR, "icon_app.png")
         if os.path.exists(app_icon_path):
             self.setWindowIcon(QIcon(app_icon_path))
