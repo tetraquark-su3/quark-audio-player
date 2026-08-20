@@ -52,6 +52,37 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   "something in that detached context tore it down". For this class of
   check (does the window open, does anything look wrong), prefer direct
   human observation over background process monitoring.
+
+  File-association note (2026-08-20): Windows associates a file type with
+  an exe by **filename**, via
+  `HKCU\Software\Classes\Applications\<name>.exe` (each registered under
+  its own `shell\open\command`) — not by the app's logical identity or
+  install location. Every past build here that shipped under a different
+  exe name (`quark-player-0.4.exe`, `quark-player-v0.40.exe`,
+  `quark-player-v0.40-windows.exe`, `quark-player-windows-v.0.5.exe`, plus
+  an earlier `quark-player.exe` pointing at a since-deleted
+  `Documents\quark_audio_player_v1.0\dist\` build) left behind its own
+  registry entry instead of updating one shared entry — 5 of 6 found
+  during a 2026-08-20 audit pointed at a deleted target
+  (`Test-Path` on the `shell\open\command` target was `False`); only
+  `quark-player-v0.6.5.exe`'s target still existed. The 5 dead ones were
+  removed and `quark-player.exe` was recreated cleanly, pointing at this
+  repo's actual build output (`dist\quark-player.exe`).
+
+  Keep the exe name (`quark-player.exe`) and output path
+  (`dist\quark-player.exe`) exactly the same on every future build:
+  rebuilding from this same folder with the same command overwrites the
+  existing binary in place, at the path the registry entry already
+  points to — no registry changes needed. **Known trap:** close any
+  running `quark-player.exe` before rebuilding — Windows locks the file
+  while it's running, and the build fails at the final EXE-write step.
+
+  If the exe name ever needs to change, or if picking "Quark Audio
+  Player" from the "Open with" chooser silently does nothing (picks,
+  closes, no window ever opens), that's most likely a stale registry
+  entry pointing at a deleted target, same as above — check
+  `HKCU:\Software\Classes\Applications\*.exe\shell\open\command` and
+  `Test-Path` each target before recreating a clean entry.
 - Linux standalone build: `Dockerfile` + `docker-build.sh`, reproducing a
   pipeline that previously existed only as shell history and a gitignored
   `building on ubuntu.txt` (recovered from the initial commit — see git
