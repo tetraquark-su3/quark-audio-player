@@ -13,6 +13,45 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 - Windows standalone build: PyInstaller via `quark-player.spec`. That spec
   currently hardcodes Linux paths (`/usr/lib/x86_64-linux-gnu/...`) for the
   VLC binaries — it needs OS-specific paths before it will build on Windows.
+
+  Diagnosed (2026-08-20): a `--onefile` build (via the README's
+  `pyinstaller --onefile --windowed ...` command) crashed once on first
+  launch with `Failed to start embedded python interpreter: Failed to
+  import encodings module`. Investigated in order before attempting any
+  fix:
+    1. PyInstaller/Python 3.14 compatibility — Python 3.14 support was
+       added in PyInstaller 6.15.0, which predates the 6.19.0 in use here;
+       the changelog shows no known `encodings`/embedded-interpreter issue
+       tied to 3.14. Ruled out as a support gap.
+    2. Windows Defender history — `WinDefend` service was Stopped,
+       `Get-MpThreat`/`Get-MpThreatDetection` returned nothing, no
+       quarantine-folder entries, no matching events in the Defender
+       operational log. No evidence of a quarantine action.
+    3. Rebuilt with `--onedir` instead of `--onefile` (otherwise identical
+       command): ran cleanly and repeatedly, no crash.
+  Automated `--onefile` re-launch checks done from this tool's own
+  environment (`Start-Process`/`WaitForExit`, no interactive desktop
+  session) gave inconsistent results — sometimes the process disappeared
+  within ~10s with no captured output, sometimes it stayed up — which
+  looked like a real intermittent crash. It wasn't: a human then launched
+  the `--onefile` exe directly, 3 consecutive times, and it opened
+  correctly every time — just slow (10-12s before the window appears,
+  expected for `--onefile` self-extracting a ~208 MB bundle, VLC + ffmpeg
+  + plugins included, into a fresh `%TEMP%\_MEIxxxxx` on every launch, not
+  a bug). **The original crash was never reproduced and its cause is
+  unconfirmed** — most likely (unproven) explanation is antivirus/
+  SmartScreen interference on the very first launch of a freshly-built,
+  unsigned exe. No fix was applied: there was nothing left to fix once the
+  crash stopped reproducing.
+
+  Methodology note from this investigation: `Start-Process`/`WaitForExit`
+  launched from this tool's own non-interactive environment is not a
+  reliable way to observe a Qt GUI app's lifecycle — it lacks the
+  interactive window station a real desktop session has, and its
+  "process exited" signal can't be trusted to mean "the app crashed" vs.
+  "something in that detached context tore it down". For this class of
+  check (does the window open, does anything look wrong), prefer direct
+  human observation over background process monitoring.
 - Linux standalone build: `Dockerfile` + `docker-build.sh`, reproducing a
   pipeline that previously existed only as shell history and a gitignored
   `building on ubuntu.txt` (recovered from the initial commit — see git
