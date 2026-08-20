@@ -20,7 +20,24 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # python3-pip pulls in python3; vlc provides libvlc.so.5/libvlccore.so.9
-# and the plugin directory PyInstaller bundles below.
+# and the plugin directory PyInstaller bundles below; binutils provides
+# objdump, which PyInstaller requires on Linux to build the executable —
+# it fails immediately at run time without it ("On Linux, objdump is
+# required"). The original shell-history pipeline never installed
+# binutils explicitly either; that gap only surfaced now, when
+# reconstructing this Dockerfile and actually running it end to end.
+# Whether it was pulled in transitively by something else on the
+# ubuntu:22.04 image at the time, or this is a requirement that appeared
+# in a newer PyInstaller release than whatever was in use back then,
+# doesn't matter here — either way, declaring it explicitly is the right
+# call rather than depending on it being present implicitly.
+#
+# libpython3.10 provides libpython3.10.so.1.0 — PyInstaller links the
+# executable against it and fails ("Python shared library
+# ('libpython3.10.so.1.0') was not found!") without it. Same situation as
+# binutils above: not installed explicitly by the original shell-history
+# pipeline either, only surfaced by actually running this Dockerfile end
+# to end — declared explicitly here for the same reason.
 #
 # Note: unlike the Windows build (see README), this does NOT install or
 # bundle ffmpeg. ffmpeg bundling (apt package + --add-binary) was tried
@@ -40,6 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         vlc \
+        binutils \
+        libpython3.10 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --no-cache-dir \

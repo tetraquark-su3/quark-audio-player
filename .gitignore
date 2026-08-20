@@ -4,6 +4,8 @@ quark-player.spec
 git faire.txt
 build/
 dist/
+build-linux-docker/
+dist-linux-docker/
 __pycache__/
 *.pyc
 .venv/

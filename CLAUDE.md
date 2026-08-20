@@ -21,10 +21,24 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   `20.04` was tried once but never adopted). Does not bundle ffmpeg — see
   README's "Building a standalone Linux executable" for why. Output goes
   to `dist-linux-docker/`, never `dist/`, so it can't silently replace the
-  binary currently in daily use. **Reconstructed from historical traces
-  (the recovered committed file, shell history), not yet run end to end —
-  don't assume it produces a working binary until `./docker-build.sh` has
-  actually completed successfully at least once.**
+  binary currently in daily use.
+
+  Verified end to end (2026-08-20): `./docker-build.sh` completed
+  successfully and the resulting `dist-linux-docker/quark-player` was
+  launched directly (not `python main.py`) and driven live under a real
+  `DISPLAY`. Confirmed working: window opens without crashing; VLC finds
+  its bundled plugins and plays a real file through to the end (this is
+  the specific thing the `vlc/plugins` vs `vlc` destination fix, see
+  `docker-build.sh`'s comment, was for); SVG icons render (Pillow bundled
+  correctly); the Equalizer dialog opens and its presets apply. Getting
+  here needed two apt packages the original shell-history pipeline never
+  installed explicitly — `binutils` (PyInstaller needs `objdump` on
+  Linux) and `libpython3.10` (PyInstaller links against
+  `libpython3.10.so.1.0`) — both now declared in `Dockerfile` with
+  comments explaining why. Also needed `--specpath build-linux-docker`
+  in `docker-build.sh`, so the generated `.spec` doesn't collide with the
+  pre-existing root-owned `quark-player.spec` in the repo root now that
+  the container runs as the invoking user (`--user`) instead of root.
 - Tests: `pytest` (config in `pyproject.toml`, dev deps in
   `requirements-dev.txt` — includes PyQt6, since `ui/icon_manager.py` needs
   it at import time even for its Qt-free tests). Run with `pytest` from the

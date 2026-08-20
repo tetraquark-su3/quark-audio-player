@@ -44,7 +44,8 @@ $DOCKER run --rm \
   pyinstaller --onefile --name quark-player \
     --distpath "$DISTPATH" \
     --workpath build-linux-docker \
-    --add-data 'assets:assets' \
+    --specpath build-linux-docker \
+    --add-data '/app/assets:assets' \
     --add-binary '/usr/lib/x86_64-linux-gnu/libvlc.so.5:.' \
     --add-binary '/usr/lib/x86_64-linux-gnu/libvlccore.so.9:.' \
     --add-data '/usr/lib/x86_64-linux-gnu/vlc/plugins:vlc' \
