@@ -260,6 +260,19 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   `_add_file`/`_add_files`/`_add_folder`), `_pending_play`, and
   `_on_track_ready` — extracted from `MainWindow`. Full rationale and scope
   notes under "MainWindow extraction candidates" below.
+- `ui/playlist_stats.py` — pure-Python (no Qt/VLC) aggregate stats over
+  the list-of-dicts format `PlaylistWidget.to_list()` produces: track
+  count, total duration, distinct artists/albums, top-N artists
+  (`compute_playlist_stats`), plus `parse_duration`/`format_total`/
+  `format_stats_html` for the "Stats" tab. Durations are the playlist's
+  "m:ss" strings (unbounded minutes, e.g. "75:03"); malformed ones count as
+  0. Tracks with an empty/"Unknown" artist are excluded from the artist
+  count and top list and reported separately. Stats cover the whole
+  playlist, not the search-filtered subset. Unit-tested
+  (`tests/test_playlist_stats.py`) — the Qt side is just `MainWindow`'s
+  "Stats" `QTextEdit` tab, refreshed from `PlaylistWidget.content_changed`
+  (emitted on add/remove/undo/clear, not on reorder/sort) through a
+  0 ms single-shot `QTimer` so a bulk add recomputes once, not per track.
 - `ui/playlist.py`, `ui/visualizations.py`, `ui/dialogs.py`, `ui/widgets.py`,
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
