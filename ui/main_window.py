@@ -30,6 +30,7 @@ from ui.icon_manager  import IconManager
 from ui.playback_controller import PlaybackController
 from ui.playlist      import PlaylistWidget
 from ui.playlist_ingestion_manager import PlaylistIngestionManager
+from ui.playlist_stats import compute_playlist_stats, format_stats_html
 from ui.playlist_persistence import PlaylistPersistence, PlaylistPersistenceError
 from ui.settings_controller import SettingsController
 from ui.style         import build_stylesheet
@@ -301,6 +302,20 @@ class MainWindow(QMainWindow):
         content_tabs.addTab(detail_tab, "Details")
         right_layout.addWidget(content_tabs)
 
+
+        stats_tab = QWidget()
+        st_layout = QVBoxLayout(stats_tab)
+        self._stats_text = QTextEdit()
+        self._stats_text.setReadOnly(True)
+        st_layout.addWidget(self._stats_text)
+        content_tabs.addTab(stats_tab, "Stats")
+        # Debounced: bulk adds (hundreds of files) emit content_changed per
+        # track; coalesce into one recompute per event-loop turn.
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setSingleShot(True)
+        self._stats_timer.setInterval(0)
+        self._stats_timer.timeout.connect(self._refresh_stats)
+        self._playlist.content_changed.connect(self._stats_timer.start)
         # ── Splitters ────────────────────────────────────────────────
         h_splitter = _StyledSplitter(Qt.Orientation.Horizontal)
         h_splitter.addWidget(self._file_browser)
@@ -673,6 +688,11 @@ class MainWindow(QMainWindow):
     def _on_selection_changed(self) -> None:
         items = self._playlist.selectedItems()
         if items:
+    def _refresh_stats(self) -> None:
+        self._stats_text.setHtml(
+            format_stats_html(compute_playlist_stats(self._playlist.to_list()))
+        )
+
             self._detail_text.setText(
                 build_detail_text(self._playlist.path_of(items[0]))
             )

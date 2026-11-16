@@ -70,6 +70,7 @@ class PlaylistWidget(QTreeWidget):
     """
 
     order_changed = pyqtSignal()  # emitted after drag-and-drop reorder
+    content_changed = pyqtSignal()  # emitted after add/remove/undo/clear
 
     MAX_HISTORY = 100
 
@@ -171,6 +172,7 @@ class PlaylistWidget(QTreeWidget):
         item.setData(0, Qt.ItemDataRole.UserRole, path)
         self.addTopLevelItem(item)
         self._path_index[path] = item
+        self.content_changed.emit()
         return item
 
     def remove_selected(self) -> int:
@@ -191,6 +193,8 @@ class PlaylistWidget(QTreeWidget):
             self._path_index.pop(path, None)
         if len(self._history) > self.MAX_HISTORY:
             self._history = self._history[-self.MAX_HISTORY:]
+        if items:
+            self.content_changed.emit()
         return len(items)
 
     def undo_delete(self) -> bool:
@@ -201,12 +205,14 @@ class PlaylistWidget(QTreeWidget):
         item.setData(0, Qt.ItemDataRole.UserRole, path)
         self.insertTopLevelItem(row, item)
         self._path_index[path] = item
+        self.content_changed.emit()
         return True
 
     def clear_all(self) -> None:
         self.clear()
         self._path_index.clear()
         self._history.clear()
+        self.content_changed.emit()
 
     def filter(self, text: str) -> None:
         text = text.lower()
