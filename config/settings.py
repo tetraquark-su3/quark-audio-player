@@ -40,6 +40,7 @@ DEFAULT_CONFIG: dict = {
     "font_family":      "Cantarell",
     "font_size":        13,
     "icon_style":       "neon",   # "neon" | "gradient" | "dash" | "filled"
+    "volume":           80,       # 0-100, restored at startup (see clamp_volume)
     "shortcuts": {
         "play_pause": "Space",
         "next":       "Right",
@@ -83,6 +84,14 @@ def is_dark_bg(hex_color: str) -> bool:
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
+
+def clamp_volume(value, default: int = 80) -> int:
+    """Coerce a stored volume to an int in 0..100 (default if unusable)."""
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return default
+
 
 def load_config() -> dict:
     if os.path.exists(CONFIG_PATH):

@@ -592,6 +592,23 @@ that audit flagged.
   crashes; `EqualizerDialog.eq_state` returns the original saved dict
   unchanged; both confirmed *not* regressed on the normal (real
   equalizer) path with separate control runs.
+- Volume at track start (fixed 2026-11-16): `MainWindow` only calls
+  `audio_set_volume(80)` once, at startup, before any VLC audio output
+  exists. When the output is created, VLC/PipeWire restore the *previous
+  session's* stream volume instead, so the slider could read 80% while VLC
+  really played at e.g. 20% (or 0% = silence) until the slider was nudged.
+  Reproduced empirically (slider→20, quit, relaunch at 80: `audio_get_volume()`
+  returned 20, captured peak 0.002 vs 0.154 expected) and fixed by
+  `PlaybackController._on_vlc_playing`, which re-applies the slider value
+  (0 if muted, via the injected `volume_provider`) on every
+  `MediaPlayerPlaying` event, marshalled through `_vlc_playing_signal` like
+  the other libvlc callbacks. The slider stays the source of truth (see the
+  `_toggle_mute` gotcha). The slider value is persisted as `volume` in the
+  config JSON (`DEFAULT_CONFIG`, clamped to 0-100 on read by
+  `config.settings.clamp_volume`, tested in `tests/test_settings_volume.py`),
+  written only in `MainWindow.closeEvent` (not per slider tick) and
+  restored at startup. Closing while muted saves the slider's pre-mute
+  level, not 0; mute state itself is not persisted.
 - `PlaybackController._on_vlc_error` (`MediaPlayerEncounteredError`
   handler) used to be attached directly to libvlc's event manager
   (`event_attach(..., self._on_vlc_error)`) instead of being wired through

@@ -22,7 +22,7 @@ from audio.engine     import (
 )
 from config.settings  import (
     DEFAULT_CONFIG, PLAYLIST_PATH,
-    is_audio, load_config, save_config,
+    is_audio, load_config, save_config, clamp_volume,
 )
 from ui.album_art_panel import AlbumArtPanel
 from ui.file_browser_panel import FileBrowserPanel
@@ -302,8 +302,6 @@ class MainWindow(QMainWindow):
         self._detail_text.setReadOnly(True)
         dt_layout.addWidget(self._detail_text)
         content_tabs.addTab(detail_tab, "Details")
-        right_layout.addWidget(content_tabs)
-
 
         stats_tab = QWidget()
         st_layout = QVBoxLayout(stats_tab)
@@ -318,6 +316,8 @@ class MainWindow(QMainWindow):
         self._stats_timer.setInterval(0)
         self._stats_timer.timeout.connect(self._refresh_stats)
         self._playlist.content_changed.connect(self._stats_timer.start)
+        right_layout.addWidget(content_tabs)
+
         # ── Splitters ────────────────────────────────────────────────
         h_splitter = _StyledSplitter(Qt.Orientation.Horizontal)
         h_splitter.addWidget(self._file_browser)
@@ -409,16 +409,17 @@ class MainWindow(QMainWindow):
         self._volume = ClickableSlider(Qt.Orientation.Horizontal)
         self._volume.setObjectName("volumeSlider")
         self._volume.setRange(0, 100)
-        self._volume.setValue(80)
-        self._volume_before_mute = 80
+        initial_volume = clamp_volume(self._config.get("volume", 80))
+        self._volume.setValue(initial_volume)
+        self._volume_before_mute = initial_volume
         self._volume.setFixedWidth(100)
         self._volume.setFixedHeight(36)
-        self._volume_label = QLabel("80%")
+        self._volume_label = QLabel(f"{initial_volume}%")
         self._volume_label.setObjectName("timeLabel")
         self._volume_label.setFixedSize(36, 36)
         self._volume_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._volume.valueChanged.connect(self._on_volume_changed)
-        self._playback.player.audio_set_volume(80)
+        self._playback.player.audio_set_volume(initial_volume)
 
         self._btn_mute = self._ctrl_btn("Volume", self._toggle_mute, checkable=True)
         btn_row.addWidget(self._btn_mute)
@@ -687,14 +688,14 @@ class MainWindow(QMainWindow):
     # Metadata / album art display
     # ------------------------------------------------------------------
 
-    def _on_selection_changed(self) -> None:
-        items = self._playlist.selectedItems()
-        if items:
     def _refresh_stats(self) -> None:
         self._stats_text.setHtml(
             format_stats_html(compute_playlist_stats(self._playlist.to_list()))
         )
 
+    def _on_selection_changed(self) -> None:
+        items = self._playlist.selectedItems()
+        if items:
             self._detail_text.setText(
                 build_detail_text(self._playlist.path_of(items[0]))
             )
@@ -900,6 +901,14 @@ class MainWindow(QMainWindow):
         # PlaylistIngestionManager entry for the empirically observed effect
         # on playlist persistence.
         self._ingestion.shutdown()
+
+        # Persist the slider value (not VLC's, and not 0 when muted — the
+        # slider keeps the pre-mute level). Best-effort: never block closing.
+        try:
+            self._config["volume"] = self._volume.value()
+            save_config(self._config)
+        except OSError:
+            pass
 
         # Deliberately self._playback.shutdown(), not .stop(): mirrors the
         # original sequence exactly (list_player + the two playback timers,
