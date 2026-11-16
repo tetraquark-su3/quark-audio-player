@@ -209,26 +209,16 @@ class EqualizerDialog(QDialog):
         }
 
     def _reset(self) -> None:
+        """Back to VLC's own "Flat" preset (preset 0), exactly what picking
+        "Flat" in the combo does. NOT zeros everywhere: VLC's flat preset has
+        a +12 dB preamp, and an equalizer at preamp 0 dB plays ~12 dB (about
+        4x) quieter than no equalizer at all — measured on real output."""
         if self._equalizer is None:
             return
-        # Block signals, zero everything in the equalizer object, then attach once.
-        self._slider_preamp.blockSignals(True)
-        for sl in self._sliders:
-            sl.blockSignals(True)
-        self._slider_preamp.setValue(0)
-        self._lbl_preamp.setText("0.0 dB")
-        vlc.libvlc_audio_equalizer_set_preamp(self._equalizer, 0.0)
-        for i, sl in enumerate(self._sliders):
-            sl.setValue(0)
-            self._lbl_vals[i].setText("0.0")
-            vlc.libvlc_audio_equalizer_set_amp_at_index(self._equalizer, 0.0, i)
-        self._slider_preamp.blockSignals(False)
-        for sl in self._sliders:
-            sl.blockSignals(False)
         self._combo_presets.blockSignals(True)
-        self._combo_presets.setCurrentIndex(0)  # "Flat" ou équivalent
+        self._combo_presets.setCurrentIndex(0)
         self._combo_presets.blockSignals(False)
-        vlc.libvlc_media_player_set_equalizer(self._player, self._equalizer)
+        self._apply_preset(0)
 
 
 # ---------------------------------------------------------------------------

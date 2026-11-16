@@ -622,6 +622,15 @@ that audit flagged.
   written only in `MainWindow.closeEvent` (not per slider tick) and
   restored at startup. Closing while muted saves the slider's pre-mute
   level, not 0; mute state itself is not persisted.
+- Equalizer "neutral" is **preamp +12 dB**, not 0: VLC's own Flat preset
+  (`libvlc_audio_equalizer_new_from_preset(0)`) has preamp 12.0, while
+  `libvlc_audio_equalizer_new()` starts at 0.0 — and an equalizer at
+  preamp 0 plays ~12 dB (about 4x) quieter than no equalizer at all
+  (measured by capturing the sink monitor: peak 0.038 vs 0.153). Fixed
+  2026-11-16: `EqualizerDialog._reset` used to zero everything (preamp 0
+  included, so Reset made playback much quieter while labelling the combo
+  "Flat"); it now applies preset 0 via `_apply_preset`, same as picking
+  "Flat" in the combo. Don't "simplify" Reset back to all-zeros.
 - `PlaybackController._on_vlc_error` (`MediaPlayerEncounteredError`
   handler) used to be attached directly to libvlc's event manager
   (`event_attach(..., self._on_vlc_error)`) instead of being wired through
