@@ -178,6 +178,8 @@ class MainWindow(QMainWindow):
             timer_fft_start       = lambda: self._timer_fft.start(),
             timer_fft_stop        = lambda: self._timer_fft.stop(),
             loader_load           = lambda path: self._loader.load(path),
+            volume_provider       = lambda: 0 if self._btn_mute.isChecked()
+                                            else self._volume.value(),
             parent                = self,
         )
 

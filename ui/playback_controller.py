@@ -145,6 +145,7 @@ class PlaybackController(QObject):
     # Internal wiring only; nothing outside this class connects to these.
     _vlc_next_item_signal  = pyqtSignal()
     _vlc_error_signal      = pyqtSignal()
+    _vlc_playing_signal    = pyqtSignal()
     _media_appended_signal = pyqtSignal(str, object)  # path, target_list
 
     def __init__(
@@ -157,6 +158,7 @@ class PlaybackController(QObject):
         timer_fft_start: Callable[[], None],
         timer_fft_stop: Callable[[], None],
         loader_load: Callable[[str], None],
+        volume_provider: Callable[[], int],
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -168,6 +170,9 @@ class PlaybackController(QObject):
         self._timer_fft_start       = timer_fft_start
         self._timer_fft_stop        = timer_fft_stop
         self._loader_load           = loader_load
+        # Effective volume the user wants (0-100, 0 if muted). Read from the
+        # Qt slider, never from VLC — see _on_vlc_playing().
+        self._volume_provider       = volume_provider
 
         # Set by bind(), once _build_ui() has created these widgets.
         self._playlist: PlaylistWidget | None = None
@@ -187,6 +192,10 @@ class PlaybackController(QObject):
         self._player.event_manager().event_attach(
             vlc.EventType.MediaPlayerEncounteredError,
             lambda _e: self._vlc_error_signal.emit(),
+        )
+        self._player.event_manager().event_attach(
+            vlc.EventType.MediaPlayerPlaying,
+            lambda _e: self._vlc_playing_signal.emit(),
         )
         self._list_player = self._vlc.media_list_player_new()
         self._list_player.set_media_player(self._player)
@@ -219,6 +228,7 @@ class PlaybackController(QObject):
 
         self._vlc_next_item_signal.connect(self._on_vlc_next_item)
         self._vlc_error_signal.connect(self._on_vlc_error)
+        self._vlc_playing_signal.connect(self._on_vlc_playing)
         self._media_appended_signal.connect(self._on_media_appended)
 
     def bind(
@@ -449,6 +459,20 @@ class PlaybackController(QObject):
             vlc.libvlc_audio_equalizer_set_amp_at_index(eq, amp, i)
         vlc.libvlc_media_player_set_equalizer(self._player, eq)
         vlc.libvlc_audio_equalizer_release(eq)
+
+    @pyqtSlot()
+    def _on_vlc_playing(self) -> None:
+        """Re-apply the slider's volume once VLC's audio output exists.
+
+        MainWindow calls audio_set_volume(80) once at startup, before any
+        audio output exists. VLC/PulseAudio-PipeWire then restore the
+        *previous session's* stream volume when the output is created, so
+        the slider can show 80% while VLC actually plays at, say, 20% (or
+        0%) until the user nudges the slider. Pushing the slider value
+        again on every MediaPlayerPlaying makes the slider the source of
+        truth. Marshalled through a signal because libvlc fires this
+        callback on its own thread (same reason as _on_vlc_error)."""
+        self._player.audio_set_volume(self._volume_provider())
 
     @pyqtSlot()
     def _on_vlc_next_item(self) -> None:
