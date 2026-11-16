@@ -160,11 +160,9 @@ class SampleLoader:
     Loads an audio file's samples in a background daemon thread.
     Access .samples, .sample_rate, and .duration after the thread completes.
 
-    Does not track VLC audio latency or interact with compute_sync_pos()
-    in any way — that function (module-level, no leading underscore,
-    despite an earlier version of this docstring claiming one) is unrelated
-    dead code with zero callers anywhere in the project; see CLAUDE.md's
-    "Dead code" section.
+    Does not track VLC audio latency: visualisations use VLC's reported
+    playback position as-is (a former, never-called compensation helper
+    was removed — see CLAUDE.md's "Dead code" section).
     """
 
     def __init__(self) -> None:
@@ -232,30 +230,6 @@ class SampleLoader:
                 self.duration    = len(samples) / self.FALLBACK_RATE
         except Exception as e:
             print(f"[SampleLoader] ffmpeg fallback failed: {e}")
-
-
-def compute_sync_pos(vlc_ms: int, duration_s: float, vlc_audio_delay_ms: int = 0) -> float:
-    """
-    Convert VLC's reported playback position (milliseconds) to a normalised
-    [0, 1] position that is compensated for the VLC audio output delay.
-
-    VLC's get_time() returns the position of the *decoder*, which is ahead of
-    what the DAC is actually playing by roughly the audio buffer latency.
-    libvlc_media_player_get_aout_delay() (exposed as player.audio_get_delay()
-    in python-vlc) returns this offset in microseconds — we subtract it so
-    the visualisation window is centred on the sample the user actually hears.
-
-    Parameters
-    ----------
-    vlc_ms            : player.get_time()  (milliseconds, may be -1)
-    duration_s        : total duration of the loaded samples (seconds)
-    vlc_audio_delay_ms: player.audio_get_delay() // 1000  (milliseconds)
-                        Pass 0 if you cannot read it (safe fallback).
-    """
-    if vlc_ms < 0 or duration_s <= 0:
-        return 0.0
-    compensated_ms = max(0, vlc_ms - vlc_audio_delay_ms)
-    return min(compensated_ms / 1000.0 / duration_s, 1.0)
 
 
 # ---------------------------------------------------------------------------

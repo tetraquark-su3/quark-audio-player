@@ -10,9 +10,12 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 ## Run / build
 - Dev: `python main.py` — needs PyQt6, python-vlc, soundfile, mutagen, numpy,
   and VLC installed system-wide. ffmpeg is an optional fallback decoder.
-- Windows standalone build: PyInstaller via `quark-player.spec`. That spec
-  currently hardcodes Linux paths (`/usr/lib/x86_64-linux-gnu/...`) for the
-  VLC binaries — it needs OS-specific paths before it will build on Windows.
+- Windows standalone build: PyInstaller, via the command in README's
+  "Building a standalone Windows executable" (explicit `--add-binary`/
+  `--add-data` flags, no checked-in `.spec`). The old root-level
+  `quark-player.spec` (Linux-only paths, gitignored, a root-owned leftover
+  of an early Docker build) was deleted 2026-11-16 — nothing read it;
+  PyInstaller regenerates a `.spec` on every run anyway.
 
   Diagnosed (2026-08-20): a `--onefile` build (via the README's
   `pyinstaller --onefile --windowed ...` command) crashed once on first
@@ -131,9 +134,10 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   Linux) and `libpython3.10` (PyInstaller links against
   `libpython3.10.so.1.0`) — both now declared in `Dockerfile` with
   comments explaining why. Also needed `--specpath build-linux-docker`
-  in `docker-build.sh`, so the generated `.spec` doesn't collide with the
-  pre-existing root-owned `quark-player.spec` in the repo root now that
-  the container runs as the invoking user (`--user`) instead of root.
+  in `docker-build.sh`, so the generated `.spec` doesn't land in the repo
+  root (where a root-owned `quark-player.spec` used to sit, since deleted)
+  now that the container runs as the invoking user (`--user`) instead of
+  root.
 - Tests: `pytest` (config in `pyproject.toml`, dev deps in
   `requirements-dev.txt` — includes PyQt6, since `ui/icon_manager.py` needs
   it at import time even for its Qt-free tests). Run with `pytest` from the
@@ -159,10 +163,10 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 - `config/settings.py` — defaults, JSON load/save, `is_audio()`, `derive_color()`.
 - `audio/engine.py` — metadata/album-art extraction (mutagen), `SampleLoader`
   (background thread, `soundfile` → `ffmpeg` fallback, both lazily imported),
-  FFT helpers (`compute_fft_frame`). Also defines `compute_sync_pos()` (would
-  compensate VLC's reported decoder position with `audio_get_delay()` so
-  visuals match what's actually audible) — **dead code**, no callers found
-  anywhere in the project; see Dead code below.
+  FFT helpers (`compute_fft_frame`). Visualisations use VLC's reported
+  playback position as-is, with no audio-output-delay compensation — a
+  never-called `compute_sync_pos()` helper for that was removed (see Dead
+  code below).
 - `ui/main_window.py` — `MainWindow`, ~900 lines. Wires VLC playback (now
   via `PlaybackController`) to the playlist, visualisations, file browser,
   settings, EQ, and shortcuts. One large class doing both UI construction
@@ -276,14 +280,17 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
 - `ui/playlist.py`, `ui/visualizations.py`, `ui/dialogs.py`, `ui/widgets.py`,
   `ui/icons.py`, `ui/style.py` — self-contained UI pieces.
 
-## Dead code (confirmed via audit, 2026-08-11)
-- `audio/engine.py::compute_sync_pos()` — zero callers anywhere in the
-  project, despite a detailed docstring describing VLC audio-delay
-  compensation for visualisation sync. Confirm whether this should actually
-  be wired into the FFT/visualisation update path, or dropped — don't assume
-  it's live just because the docstring reads like it is.
-- `ICON_STYLES` (`ui/icons.py`) — imported in `ui/main_window.py` but never
-  used there.
+## Dead code
+Cleaned up 2026-11-16 (both items below came from the 2026-08-11 audit):
+- `audio/engine.py::compute_sync_pos()` — **removed**. It had zero callers
+  despite a docstring describing VLC audio-delay compensation
+  (`player.audio_get_delay()`) for visualisation sync. Removed rather than
+  wired in since the visuals' sync with the audio was judged fine as is. If
+  visuals ever look audibly early/late, that idea is the starting point —
+  it's in git history (`git log -S compute_sync_pos`). The compensation is
+  subtle: validate it against real playback, not just that it runs.
+- `ICON_STYLES` import in `ui/main_window.py` — **removed** (the list
+  itself still lives in `ui/icons.py`, unused elsewhere).
 
 ## MainWindow extraction candidates
 `MainWindow.__init__`/`_build_ui` used to mix VLC wiring, UI construction,
@@ -508,9 +515,6 @@ that audit flagged.
   for any new optional dependency.
 
 ## Gotchas
-- `compute_sync_pos()` is dead code today (see Dead code above). If you wire
-  it up, note the VLC audio-delay compensation logic itself is subtle —
-  verify manually against real playback, not just that it runs.
 - `PlaylistWidget`'s custom `SortableHeader` and `_sort_col`/`_sort_order`
   work around a Qt6 regression in `setSortingEnabled` — don't "simplify" this
   back to the standard Qt sorting API.

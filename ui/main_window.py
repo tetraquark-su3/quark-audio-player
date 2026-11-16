@@ -39,7 +39,6 @@ from ui.visualizations import (
     SpectrogramWidget, SpectrumWidget, VUMeterWidget,
 )
 from ui.widgets       import ClickableSlider
-from ui.icons        import ICON_STYLES
 
 # ---------------------------------------------------------------------------
 # Styled splitter — wide handle with visible grip dots + hover highlight
