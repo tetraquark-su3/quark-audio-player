@@ -53,6 +53,31 @@ background-decoded PCM buffer kept in sync with VLC's playback position.
   check (does the window open, does anything look wrong), prefer direct
   human observation over background process monitoring.
 
+  Windows real-use verification (2026-08-20, between the crash diagnosis
+  above and the file-association audit below): the first real end-to-end
+  check of `dist\quark-player.exe` on Windows, done in a separate chat
+  session (not this tool) — the maintainer ran a 5-point checklist
+  directly against the built exe and reported all five as OK: a real
+  audio file plays (VLC finds its bundled DLLs/plugins), SVG icons
+  render, the Equalizer dialog opens and a preset applies, and — the
+  point this fix actually exists for — mono-instance behavior:
+  double-clicking the exe while an instance is already running forwards
+  the file to the existing window instead of opening a second one. This
+  is the first real test of the Windows startup fix (the `fcntl`/socket-
+  probe split described at the top of this section, in `main.py`).
+  Self-reported by direct human observation, not scripted/logged by a
+  tool — accepted as evidence on that basis, same methodology preference
+  already noted above for the `--onefile` re-launch check.
+
+  Scope note: this confirms the *normal* single-instance path (a second
+  launch while one instance is already up and its listener socket is
+  bound). It does not touch the still-unverified near-simultaneous-launch
+  race documented under Gotchas below (`_try_send_to_existing()` racing
+  `_start_listener()`'s socket bind before either has finished starting)
+  — that race is narrower and harder to trigger deliberately, and this
+  checklist wasn't designed to exercise it. Don't read this entry as
+  closing that Gotcha.
+
   File-association note (2026-08-20): Windows associates a file type with
   an exe by **filename**, via
   `HKCU\Software\Classes\Applications\<name>.exe` (each registered under
